@@ -1,0 +1,18 @@
+# Ultra-Fast Core - Requirements
+# Python 3.12 (3.14 uyumsuzluk çıkarıyor)
+
+# Core Dependencies (Mevcut)
+elevenlabs>=1.0.0
+python-dotenv>=1.0.0
+pygame>=2.5.0
+pyaudio>=0.2.13
+SpeechRecognition>=3.10.0
+google-generativeai>=0.3.0
+
+# New Dependencies (Ultra-Fast Core için)
+aiohttp>=3.9.0
+webrtcvad>=2.0.10
+
+# Optional (Development)
+# pytest>=7.4.0  # Testing için
+# black>=23.0.0  # Code formatting için

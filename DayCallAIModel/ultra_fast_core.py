@@ -1,772 +1,746 @@
 """
-ULTRA-FAST CORE - Zero-Latency Voice AI Assistant
-==================================================
-Bu script, insan algısının sınırlarında çalışan, neredeyse sıfır gecikme (zero-latency) 
-ile kusursuz ses algılama (perfect VAD) yeteneğine sahip nihai implementasyondur.
+ULTRA-FAST CORE v2.0 — Natural Conversation Voice AI
+=====================================================
+Event-driven, continuously-listening voice assistant with real-time
+interruption support and sentence-level streaming TTS.
 
-PERFORMANS HEDEFLERİ:
-- STT → LLM: <50ms (async)
-- TTS → Playback: <200ms (streaming)
-- Interruption Response: <100ms
-- Total Perceived Latency: <1 saniye
+ARCHITECTURE:
+- Continuous mic monitoring (always-on PyAudio stream)
+- State machine: IDLE → LISTENING → PROCESSING → SPEAKING
+- Background VAD during playback for instant interruption
+- Groq Whisper STT (~0.3s) instead of Google STT (~2s)
+- Streaming LLM → sentence-level TTS pipeline
+- Conversation history preserved across interruptions
 
-TEMEL OPTİMİZASYONLAR:
-1. Async Architecture (asyncio/aiohttp) - Blocking I/O yok
-2. Streaming Audio Playback - İlk byte'ta çalma başlar
-3. Enhanced VAD (RMS + WebRTC) - Nefes alışlarını ayırt eder
-4. Full-Duplex Interruption - AI konuşurken araya girme desteği
+LATENCY TARGETS:
+- STT: <500ms (Groq Whisper)
+- First audio: <3s after speech ends
+- Interruption response: <200ms
 """
 
 import os
 import sys
+import io
 import time
 import wave
+import json
 import asyncio
 import threading
 import audioop
 import pyaudio
+from enum import Enum
 from collections import deque
-from typing import Optional, Tuple
+from typing import Optional, AsyncGenerator
 from dotenv import load_dotenv
 
 # ============================================================================
-# KÜTÜPHANE KONTROLLERI VE İMPORTLAR
+# LIBRARY CHECKS
 # ============================================================================
 
 try:
     import webrtcvad
     WEBRTC_AVAILABLE = True
 except ImportError:
-    print("⚠️  webrtcvad bulunamadı. Sadece RMS tabanlı VAD kullanılacak.")
-    print("   Daha iyi performans için: pip install webrtcvad")
+    print("⚠️  webrtcvad not found — using RMS-only VAD.")
+    print("   For better accuracy: pip install webrtcvad")
     WEBRTC_AVAILABLE = False
 
 try:
     import aiohttp
 except ImportError:
-    print("❌ HATA: aiohttp bulunamadı!")
-    print("   Kurulum için: pip install aiohttp")
+    print("❌ aiohttp required: pip install aiohttp")
     sys.exit(1)
 
 try:
     import pygame
 except ImportError:
-    print("❌ HATA: pygame bulunamadı!")
-    print("   Kurulum için: pip install pygame")
-    sys.exit(1)
-
-try:
-    import speech_recognition as sr
-except ImportError:
-    print("❌ HATA: SpeechRecognition bulunamadı!")
-    print("   Kurulum için: pip install speechrecognition")
-    sys.exit(1)
-
-try:
-    import google.generativeai as genai
-except ImportError:
-    print("❌ HATA: google-generativeai bulunamadı!")
-    print("   Kurulum için: pip install google-generativeai")
+    print("❌ pygame required: pip install pygame")
     sys.exit(1)
 
 # ============================================================================
-# ENVIRONMENT VE API ANAHTARLARI
+# ENVIRONMENT & API KEYS
 # ============================================================================
 
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-if not OPENROUTER_API_KEY or not ELEVENLABS_API_KEY:
-    print("❌ HATA: .env dosyasında API anahtarları eksik!")
-    print("   OPENROUTER_API_KEY ve ELEVENLABS_API_KEY gerekli.")
+missing = []
+if not OPENROUTER_API_KEY: missing.append("OPENROUTER_API_KEY")
+if not ELEVENLABS_API_KEY: missing.append("ELEVENLABS_API_KEY")
+if not GROQ_API_KEY: missing.append("GROQ_API_KEY (free at https://console.groq.com)")
+
+if missing:
+    print("❌ Missing API keys in .env:")
+    for m in missing:
+        print(f"   - {m}")
     sys.exit(1)
 
-# OpenRouter için genai.configure() gerekmez
-
 # ============================================================================
-# SES KAYIT AYARLARI
+# AUDIO CONSTANTS
 # ============================================================================
 
-CHUNK = 1024                    # PyAudio chunk boyutu
-FORMAT = pyaudio.paInt16        # 16-bit audio
+SAMPLE_RATE = 16000             # 16kHz — optimal for STT and WebRTC VAD
 CHANNELS = 1                    # Mono
-RATE = 16000                    # 16kHz (STT ve WebRTC VAD için optimal)
-SILENCE_LIMIT = 1.8             # Saniye - Konuşma bitişi için sessizlik süresi
-MAX_DURATION = 30               # Saniye - Maksimum kayıt süresi
-VAD_FRAME_DURATION = 30         # ms - WebRTC VAD frame süresi (10, 20, veya 30 olmalı)
+FORMAT = pyaudio.paInt16        # 16-bit
+SAMPLE_WIDTH = 2                # bytes per sample (16-bit)
+CHUNK = 480                     # 480 samples = 960 bytes = 30ms at 16kHz
+                                # Exactly matches WebRTC VAD frame size
+SILENCE_LIMIT = 1.5             # Seconds of silence before speech ends
+MAX_DURATION = 30               # Max recording duration (seconds)
+INTERRUPT_DEBOUNCE = 6          # Consecutive speech frames to trigger interrupt
+                                # 6 frames × 30ms = 180ms debounce (avoids echo)
 
 # ============================================================================
-# ELEVENLABS API AYARLARI
+# API CONFIGURATION
 # ============================================================================
 
-ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1/text-to-speech"
-VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Rachel
-MODEL_ID = "eleven_multilingual_v2"
-OUTPUT_FORMAT = "mp3_44100_128"
+ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
+VOICE_ID = "21m00Tcm4TlvDq8ikWAM"   # Rachel
+TTS_MODEL = "eleven_multilingual_v2"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 # ============================================================================
-# GLOBAL STATE - Full-Duplex İçin Durum Yönetimi
+# STATE MACHINE
 # ============================================================================
+
+class ConversationState(Enum):
+    IDLE = "idle"
+    LISTENING = "listening"
+    PROCESSING = "processing"
+    SPEAKING = "speaking"
+
 
 class GlobalState:
-    """
-    Full-duplex iletişim için global durum yönetimi.
-    
-    AMAÇ: Kullanıcı ve AI'ın aynı anda konuşmasını engellemek ve
-    kesintileri (interruption) yönetmek.
-    """
+    """Thread-safe state management for the conversation loop."""
+
     def __init__(self):
-        self.user_speaking = False      # Kullanıcı şu an konuşuyor mu?
-        self.ai_speaking = False         # AI şu an konuşuyor mu?
-        self.interrupt_requested = False # Kullanıcı AI'ı kesmek istiyor mu?
-        self.playback_thread: Optional[threading.Thread] = None
+        self.state = ConversationState.IDLE
+        self.interrupt_requested = False
         self.should_stop_playback = False
         self.lock = threading.Lock()
-    
+
+    def set_state(self, new_state: ConversationState):
+        with self.lock:
+            self.state = new_state
+
+    def get_state(self) -> ConversationState:
+        with self.lock:
+            return self.state
+
     def request_interrupt(self):
-        """AI konuşurken kullanıcı araya girdiğinde çağrılır"""
+        """Called by interrupt monitor when user speaks during AI playback."""
         with self.lock:
             self.interrupt_requested = True
             self.should_stop_playback = True
-            if self.ai_speaking:
-                # Pygame mixer'ı durdur
-                try:
-                    pygame.mixer.music.stop()
-                except:
-                    pass
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
+
+    def reset_interrupt(self):
+        with self.lock:
+            self.interrupt_requested = False
+            self.should_stop_playback = False
+
 
 state = GlobalState()
 
 # ============================================================================
-# CONVERSATION HISTORY - Konuşma Geçmişi Yönetimi
+# CONVERSATION HISTORY
 # ============================================================================
 
 class ConversationHistory:
-    """
-    Konuşma geçmişini yöneten sınıf.
-    
-    AMAÇ: AI'ın önceki mesajları hatırlaması için conversation context sağlar.
-    
-    KULLANIM:
-    - Her kullanıcı mesajı ve AI cevabı kaydedilir
-    - LLM'e gönderilirken tüm geçmiş messages array'ine eklenir
-    - Maksimum mesaj sayısı ile memory overflow önlenir
-    """
-    
+    """Sliding-window conversation memory for the LLM."""
+
     def __init__(self, max_messages: int = 20):
-        """
-        Args:
-            max_messages: Saklanacak maksimum mesaj sayısı (user + assistant çiftleri)
-                         20 mesaj = 10 konuşma turu (her tur: user + assistant)
-        """
         self.messages = []
         self.max_messages = max_messages
         self.system_message = {
             "role": "system",
-            "content": "Sen samimi, dert ortağı bir arkadaşsın. Doğal, kısa ve konuşma dilinde Türkçe cevap ver. Kullanıcının önceki mesajlarını hatırla ve bağlama uygun cevaplar ver."
+            "content": (
+                "Sen samimi, dert ortağı bir arkadaşsın. Doğal, kısa ve konuşma "
+                "dilinde Türkçe cevap ver. Kullanıcının önceki mesajlarını hatırla "
+                "ve bağlama uygun cevaplar ver."
+            )
         }
-    
+
     def add_user_message(self, content: str):
-        """Kullanıcı mesajı ekle"""
-        self.messages.append({
-            "role": "user",
-            "content": content
-        })
-        self._trim_history()
-    
+        self.messages.append({"role": "user", "content": content})
+        self._trim()
+
     def add_assistant_message(self, content: str):
-        """AI cevabı ekle"""
-        self.messages.append({
-            "role": "assistant",
-            "content": content
-        })
-        self._trim_history()
-    
-    def _trim_history(self):
-        """Geçmişi maksimum mesaj sayısına göre kırp"""
-        if len(self.messages) > self.max_messages:
-            # En eski mesajları sil (system message hariç)
-            # Her seferinde 2 mesaj sil (user + assistant çifti)
+        self.messages.append({"role": "assistant", "content": content})
+        self._trim()
+
+    def _trim(self):
+        while len(self.messages) > self.max_messages:
             self.messages = self.messages[2:]
-    
+
     def get_messages_for_api(self) -> list:
-        """API'ye gönderilecek mesaj listesini döndür (system + history)"""
         return [self.system_message] + self.messages
-    
-    def clear(self):
-        """Geçmişi temizle"""
-        self.messages = []
-    
+
     def get_message_count(self) -> int:
-        """Mevcut mesaj sayısını döndür"""
         return len(self.messages)
 
 # ============================================================================
-# ENHANCED VAD - RMS + WebRTC Hybrid Algoritması
+# ENHANCED VAD — RMS + WebRTC Hybrid
 # ============================================================================
 
 class EnhancedVAD:
     """
-    Gelişmiş Ses Aktivitesi Algılama (Voice Activity Detection)
-    
-    YAKLAŞIM: RMS (enerji tabanlı) + WebRTC VAD (makine öğrenmesi tabanlı)
-    
-    NEDEN HYBRID?
-    - RMS: Hızlı, düşük latency, ama nefes alışlarını yanlış algılayabilir
-    - WebRTC VAD: Akıllı, nefes/gürültü ayırımı iyi, ama biraz daha yavaş
-    - İkisini birleştirerek en iyi sonucu alıyoruz
-    
-    KAZANIM: ~%60 daha az false positive (yanlış algılama)
+    Hybrid Voice Activity Detection.
+    1. RMS energy pre-filter (~0.1ms) — fast rejection of silence
+    2. WebRTC VAD verification (~0.5ms) — ML-based speech vs noise
+    Calibrates once at startup, not every turn.
     """
-    
-    def __init__(self, rate: int = RATE):
+
+    def __init__(self, rate: int = SAMPLE_RATE):
         self.rate = rate
-        self.threshold_rms = 500  # Başlangıç değeri, kalibrasyonla güncellenecek
-        
-        # WebRTC VAD başlatma (varsa)
+        self.threshold_rms = 500
+        self.calibrated = False
+
         self.vad = None
         if WEBRTC_AVAILABLE:
             try:
-                self.vad = webrtcvad.Vad(2)  # Agresiflik: 0-3 (2 = orta, dengeli)
-                print("✅ WebRTC VAD aktif (Agresiflik: 2)")
-            except Exception as e:
-                print(f"⚠️  WebRTC VAD başlatılamadı: {e}")
+                self.vad = webrtcvad.Vad(2)  # Aggressiveness 0-3
+                print("✅ WebRTC VAD active (aggressiveness: 2)")
+            except Exception:
                 self.vad = None
-    
-    def calibrate(self, stream) -> None:
-        """
-        Ortam gürültüsünü ölçerek dinamik eşik belirler.
-        
-        SÜRE: ~1 saniye
-        KAZANIM: Farklı ortamlara adaptasyon (~%40 daha iyi VAD accuracy)
-        """
-        print("🤫 Ortam dinleniyor (Lütfen 1 sn konuşmayın)...")
+
+    def calibrate(self, stream):
+        """Measure ambient noise once to set dynamic threshold."""
+        if self.calibrated:
+            return
+
+        print("🤫 Calibrating ambient noise (1 second)...")
         noise_values = []
-        
-        # 1 saniye boyunca ortamı dinle
-        for _ in range(0, int(self.rate / CHUNK * 1)):
+        num_chunks = int(self.rate / CHUNK)
+
+        for _ in range(num_chunks):
             data = stream.read(CHUNK, exception_on_overflow=False)
-            rms = audioop.rms(data, 2)
+            rms = audioop.rms(data, SAMPLE_WIDTH)
             noise_values.append(rms)
-        
+
         if noise_values:
             avg_noise = sum(noise_values) / len(noise_values)
-            # Ortam gürültüsünün üzerine +500 ekleyerek eşik belirliyoruz
-            # Bu değer deneysel olarak optimize edilmiştir
             self.threshold_rms = max(300, avg_noise + 500)
-            print(f"✅ Kalibrasyon Tamam! RMS Eşik: {int(self.threshold_rms)}")
         else:
             self.threshold_rms = 500
-            print("⚠️  Kalibrasyon başarısız, varsayılan eşik kullanılıyor: 500")
-    
+
+        self.calibrated = True
+        print(f"✅ Calibration done! RMS threshold: {int(self.threshold_rms)}")
+
     def is_speech(self, audio_chunk: bytes) -> bool:
-        """
-        Verilen ses chunk'ının konuşma içerip içermediğini belirler.
-        
-        HYBRID YAKLAŞIM:
-        1. RMS kontrolü (hızlı ön filtre) - ~0.1ms
-        2. WebRTC VAD kontrolü (akıllı doğrulama) - ~0.5ms
-        
-        TOPLAM LATENCY: ~0.6ms (ihmal edilebilir)
-        """
-        # 1. RMS kontrolü (enerji seviyesi)
-        rms = audioop.rms(audio_chunk, 2)
-        
-        # Eğer RMS eşiğin altındaysa, kesinlikle konuşma yok
-        # Bu, WebRTC VAD'ı gereksiz yere çağırmamızı engeller
+        rms = audioop.rms(audio_chunk, SAMPLE_WIDTH)
         if rms < self.threshold_rms:
             return False
-        
-        # 2. WebRTC VAD kontrolü (varsa)
+
         if self.vad is not None:
             try:
-                # WebRTC VAD, 10/20/30ms frame'ler bekler
-                # CHUNK boyutu buna uygun olmalı
                 return self.vad.is_speech(audio_chunk, self.rate)
-            except Exception as e:
-                # WebRTC VAD hata verirse, RMS sonucuna güven
+            except Exception:
                 return True
-        
-        # WebRTC VAD yoksa, sadece RMS sonucunu kullan
+
         return True
 
 # ============================================================================
-# ASYNC AUDIO RECORDING - Non-Blocking Kayıt
+# MICROPHONE MONITOR — Persistent Stream + Interrupt Detection
 # ============================================================================
 
-async def record_audio_async(filename: str, vad: EnhancedVAD) -> bool:
+class MicrophoneMonitor:
     """
-    Asenkron ses kaydı fonksiyonu.
-    
-    PROBLEM: PyAudio doğrudan async desteklemiyor.
-    ÇÖZÜM: Blocking I/O'yu thread pool'da çalıştırıp await ediyoruz.
-    
-    KAZANIM: Ana event loop bloklanmıyor, diğer task'lar çalışmaya devam ediyor.
-    LATENCY: ~0ms (non-blocking)
-    
-    Returns:
-        bool: Başarılı kayıt yapıldıysa True, interrupt olduysa False
+    Manages a persistent microphone stream.
+    - record_until_silence(): captures speech, returns raw PCM
+    - start/stop_interrupt_monitor(): background thread watches for
+      user speech during AI playback and triggers interrupt
+    - Overflow buffer preserves audio captured during interrupt detection
     """
-    loop = asyncio.get_event_loop()
-    
-    # PyAudio'yu thread pool'da çalıştır
-    # Bu sayede blocking I/O ana event loop'u bloklamaz
-    result = await loop.run_in_executor(None, _record_audio_blocking, filename, vad)
-    return result
 
-def _record_audio_blocking(filename: str, vad: EnhancedVAD) -> bool:
-    """
-    Blocking ses kaydı (thread pool'da çalışacak).
-    
-    AKILLI KAYIT ALGORITMASI:
-    1. Konuşma başlayana kadar bekle (VAD)
-    2. Konuşma başladıktan sonra SILENCE_LIMIT kadar sessizlik olana kadar kaydet
-    3. Interrupt sinyali gelirse hemen dur
-    
-    KAZANIM: Kullanıcı butona basmak zorunda değil (~%100 UX improvement)
-    """
-    p = pyaudio.PyAudio()
-    stream = p.open(
-        format=FORMAT,
-        channels=CHANNELS,
-        rate=RATE,
-        input=True,
-        frames_per_buffer=CHUNK
-    )
-    
-    # Kalibrasyon (ilk çalıştırmada)
-    vad.calibrate(stream)
-    
-    print("🎤 Şimdi Konuşabilirsin! (Sustuğunda otomatik duracak)")
-    
-    frames = []
-    silent_chunks = 0
-    speaking_started = False
-    start_time = time.time()
-    
-    # Global state güncelle
-    state.user_speaking = True
-    
-    while True:
-        # Interrupt kontrolü
-        if state.interrupt_requested:
-            print("⚠️  Kayıt interrupt edildi")
-            break
-        
-        # Ses chunk'ı oku
-        data = stream.read(CHUNK, exception_on_overflow=False)
-        frames.append(data)
-        
-        # VAD kontrolü
-        is_speech = vad.is_speech(data)
-        
-        # Maksimum süre kontrolü (sonsuz döngü önleme)
-        if time.time() - start_time > MAX_DURATION:
-            print("⏳ Maksimum süre doldu (30 saniye)")
-            break
-        
-        # Konuşma başladı mı?
-        if is_speech:
-            speaking_started = True
-            silent_chunks = 0
-        elif speaking_started:
-            silent_chunks += 1
-        
-        # Sessizlik limiti doldu mu?
-        # SILENCE_LIMIT saniye boyunca sessizlik = konuşma bitti
-        if speaking_started and (silent_chunks > (SILENCE_LIMIT * RATE / CHUNK)):
-            print("✅ Konuşma bitti (Sessizlik algılandı)")
-            break
-    
-    # Cleanup
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
-    
-    # Global state güncelle
-    state.user_speaking = False
-    
-    # Eğer hiç konuşma olmadıysa kaydetme
-    if not speaking_started:
-        print("⚠️  Konuşma algılanmadı")
-        return False
-    
-    # WAV dosyası olarak kaydet
-    wf = wave.open(filename, 'wb')
-    wf.setnchannels(CHANNELS)
-    wf.setsampwidth(p.get_sample_size(FORMAT))
-    wf.setframerate(RATE)
-    wf.writeframes(b''.join(frames))
-    wf.close()
-    
-    return True
+    def __init__(self, vad: EnhancedVAD):
+        self.vad = vad
+        self.p = pyaudio.PyAudio()
+        self.stream = None
+        self._interrupt_thread: Optional[threading.Thread] = None
+        self._monitoring = False
+        self._overflow_buffer: deque = deque(maxlen=100)  # ~3s at 30ms/chunk
 
-# ============================================================================
-# ASYNC STT - Google Speech Recognition (Async Wrapper)
-# ============================================================================
+    def open(self):
+        self.stream = self.p.open(
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=SAMPLE_RATE,
+            input=True,
+            frames_per_buffer=CHUNK
+        )
+        self.vad.calibrate(self.stream)
+        print("🎤 Microphone ready\n")
 
-async def transcribe_audio_async(filename: str) -> Optional[str]:
-    """
-    Asenkron ses-yazı dönüşümü.
-    
-    PROBLEM: SpeechRecognition kütüphanesi blocking.
-    ÇÖZÜM: Thread pool'da çalıştırıp await ediyoruz.
-    
-    KAZANIM: ~500ms → ~50ms perceived latency (async sayesinde)
-    """
-    loop = asyncio.get_event_loop()
-    
-    print("👂 Yazıya çevriliyor (Google STT)...")
-    start_time = time.time()
-    
-    # Blocking STT'yi thread pool'da çalıştır
-    text = await loop.run_in_executor(None, _transcribe_blocking, filename)
-    
-    elapsed = (time.time() - start_time) * 1000
-    print(f"   ⏱️  STT tamamlandı: {elapsed:.0f}ms")
-    
-    return text
+    def close(self):
+        self._monitoring = False
+        if self._interrupt_thread and self._interrupt_thread.is_alive():
+            self._interrupt_thread.join(timeout=2.0)
+        if self.stream:
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+            except Exception:
+                pass
+        self.p.terminate()
 
-def _transcribe_blocking(filename: str) -> Optional[str]:
-    """Blocking STT işlemi (thread pool'da çalışacak)"""
-    recognizer = sr.Recognizer()
-    abs_path = os.path.abspath(filename)
-    
-    try:
-        with sr.AudioFile(abs_path) as source:
-            audio_data = recognizer.record(source)
-            # Google Web Speech API (ücretsiz, hızlı)
-            text = recognizer.recognize_google(audio_data, language="tr-TR")
-            return text
-    except sr.UnknownValueError:
-        print("❌ Ses anlaşılamadı (Çok sessiz veya gürültülü olabilir)")
-        return None
-    except sr.RequestError as e:
-        print(f"❌ Google STT hatası: {e}")
-        return None
+    def read_chunk(self) -> bytes:
+        return self.stream.read(CHUNK, exception_on_overflow=False)
 
-# ============================================================================
-# ASYNC LLM - Google Gemini (Async HTTP)
-# ============================================================================
+    def record_until_silence(self) -> Optional[bytes]:
+        """
+        Record from speech start until silence.
+        Drains overflow buffer first (captures audio from interrupt transition).
+        Returns raw PCM bytes, or None if no speech detected.
+        """
+        frames = []
+        silent_chunks = 0
+        speaking_started = False
+        silence_threshold = int(SILENCE_LIMIT * SAMPLE_RATE / CHUNK)
 
-async def get_ai_response_async(user_text: str, conversation_history: ConversationHistory) -> Optional[str]:
-    """
-    Asenkron LLM isteği (OpenRouter) - Conversation History ile.
-    
-    OpenRouter, OpenAI-compatible API kullanır, bu yüzden entegrasyon çok basit.
-    Desteklenen modeller: google/gemini-flash-1.5, anthropic/claude-3.5-sonnet, vb.
-    
-    Args:
-        user_text: Kullanıcının mevcut mesajı
-        conversation_history: Konuşma geçmişi objesi
-    
-    KAZANIM: ~500ms → ~50ms perceived latency (non-blocking)
-    GERÇEK SÜRE: ~1-2 saniye (LLM inference), ama diğer işlemler bloklanmıyor
-    """
-    print("🧠 AI düşünüyor (OpenRouter)...")
-    start_time = time.time()
-    
-    try:
-        # Kullanıcı mesajını geçmişe ekle
-        conversation_history.add_user_message(user_text)
-        
-        # OpenRouter API endpoint (OpenAI-compatible)
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        
-        # Headers
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/yourusername/voice-ai",
-            "X-Title": "Voice AI Assistant"
-        }
-        
-        # Request payload (OpenAI format) - TÜM KONUŞMA GEÇMİŞİ İLE
-        payload = {
-            "model": "openrouter/aurora-alpha",
-            "messages": conversation_history.get_messages_for_api(),  # Geçmiş dahil!
-            "temperature": 0.9,
-            "max_tokens": 800  # Daha uzun, tam cevaplar için (önceden 200'dü, çok kısaydı)
-        }
-        
-        # Async HTTP request
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    ai_text = data["choices"][0]["message"]["content"]
-                    
-                    # AI cevabını geçmişe ekle
-                    conversation_history.add_assistant_message(ai_text)
-                    
-                    elapsed = (time.time() - start_time) * 1000
-                    print(f"   ⏱️  LLM tamamlandı: {elapsed:.0f}ms")
-                    print(f"🤖 AI: {ai_text}")
-                    print(f"   💬 Geçmiş: {conversation_history.get_message_count()} mesaj")
-                    
-                    return ai_text
+        # Drain overflow buffer from interrupt monitor
+        buffered = list(self._overflow_buffer)
+        self._overflow_buffer.clear()
+
+        for chunk in buffered:
+            frames.append(chunk)
+            if self.vad.is_speech(chunk):
+                speaking_started = True
+                silent_chunks = 0
+            elif speaking_started:
+                silent_chunks += 1
+
+        start_time = time.time()
+
+        while True:
+            if state.interrupt_requested:
+                break
+
+            chunk = self.read_chunk()
+            frames.append(chunk)
+
+            if time.time() - start_time > MAX_DURATION:
+                print("⏳ Max duration reached (30s)")
+                break
+
+            if self.vad.is_speech(chunk):
+                speaking_started = True
+                silent_chunks = 0
+            elif speaking_started:
+                silent_chunks += 1
+
+            if speaking_started and silent_chunks > silence_threshold:
+                print("✅ Speech ended (silence detected)")
+                break
+
+        if not speaking_started:
+            return None
+
+        return b''.join(frames)
+
+    def save_wav(self, pcm_data: bytes, filename: str):
+        wf = wave.open(filename, 'wb')
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(SAMPLE_WIDTH)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(pcm_data)
+        wf.close()
+
+    def start_interrupt_monitor(self):
+        """Start background thread that watches for user speech during playback."""
+        self._monitoring = True
+        self._overflow_buffer.clear()
+        self._interrupt_thread = threading.Thread(
+            target=self._interrupt_monitor_loop,
+            daemon=True
+        )
+        self._interrupt_thread.start()
+
+    def stop_interrupt_monitor(self):
+        self._monitoring = False
+        if self._interrupt_thread and self._interrupt_thread.is_alive():
+            self._interrupt_thread.join(timeout=2.0)
+        self._interrupt_thread = None
+
+    def _interrupt_monitor_loop(self):
+        """Background thread: reads mic, detects speech, triggers interrupt."""
+        consecutive_speech = 0
+
+        while self._monitoring and not state.interrupt_requested:
+            try:
+                chunk = self.read_chunk()
+                self._overflow_buffer.append(chunk)
+
+                if self.vad.is_speech(chunk):
+                    consecutive_speech += 1
+                    if consecutive_speech >= INTERRUPT_DEBOUNCE:
+                        print("\n🛑 User speech detected — interrupting AI!")
+                        state.request_interrupt()
+                        break
                 else:
-                    error_text = await response.text()
-                    print(f"❌ OpenRouter API hatası ({response.status}): {error_text}")
-                    # Hata durumunda kullanıcı mesajını geçmişten çıkar
-                    conversation_history.messages.pop()
+                    consecutive_speech = 0
+            except Exception:
+                break
+
+# ============================================================================
+# GROQ WHISPER STT — Ultra-fast cloud transcription (~0.3s)
+# ============================================================================
+
+async def transcribe_groq(filename: str) -> Optional[str]:
+    """Transcribe audio via Groq Whisper API."""
+    print("👂 Transcribing (Groq Whisper)...")
+    start = time.time()
+
+    try:
+        with open(filename, 'rb') as f:
+            file_content = f.read()
+
+        async with aiohttp.ClientSession() as session:
+            data = aiohttp.FormData()
+            data.add_field(
+                'file',
+                io.BytesIO(file_content),
+                filename=os.path.basename(filename),
+                content_type='audio/wav'
+            )
+            data.add_field('model', 'whisper-large-v3-turbo')
+            data.add_field('language', 'tr')
+            data.add_field('response_format', 'json')
+
+            headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+
+            async with session.post(GROQ_STT_URL, data=data, headers=headers) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    text = result.get('text', '').strip()
+                    elapsed = (time.time() - start) * 1000
+                    print(f"   ⏱️  STT: {elapsed:.0f}ms")
+                    return text if text else None
+                else:
+                    error = await resp.text()
+                    print(f"❌ Groq STT error ({resp.status}): {error}")
                     return None
-    
     except Exception as e:
-        print(f"❌ OpenRouter hatası: {e}")
-        # Hata durumunda kullanıcı mesajını geçmişten çıkar
+        print(f"❌ Groq STT error: {e}")
+        return None
+
+# ============================================================================
+# STREAMING LLM — OpenRouter with SSE, yields sentences
+# ============================================================================
+
+async def stream_llm_response(
+    user_text: str,
+    conversation_history: ConversationHistory
+) -> AsyncGenerator[str, None]:
+    """
+    Stream LLM response via OpenRouter SSE.
+    Yields complete sentences as they form, enabling sentence-level TTS.
+    """
+    print("🧠 AI thinking (OpenRouter streaming)...")
+    start = time.time()
+
+    conversation_history.add_user_message(user_text)
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/DayCall/voice-ai",
+        "X-Title": "DayCall Voice AI"
+    }
+
+    payload = {
+        "model": "openrouter/aurora-alpha",
+        "messages": conversation_history.get_messages_for_api(),
+        "temperature": 0.9,
+        "max_tokens": 800,
+        "stream": True
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(OPENROUTER_URL, json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    error = await resp.text()
+                    print(f"❌ OpenRouter error ({resp.status}): {error}")
+                    # Rollback user message
+                    if conversation_history.messages and conversation_history.messages[-1]["role"] == "user":
+                        conversation_history.messages.pop()
+                    return
+
+                buffer = ""
+                first_token_time = None
+
+                async for line in resp.content:
+                    if state.interrupt_requested:
+                        break
+
+                    line_str = line.decode('utf-8').strip()
+                    if not line_str or not line_str.startswith('data: '):
+                        continue
+
+                    data_str = line_str[6:]
+                    if data_str == '[DONE]':
+                        break
+
+                    try:
+                        data = json.loads(data_str)
+                        delta = data.get('choices', [{}])[0].get('delta', {})
+                        token = delta.get('content', '')
+
+                        if token:
+                            if first_token_time is None:
+                                first_token_time = time.time()
+                                print(f"   ⏱️  First token: {(first_token_time - start) * 1000:.0f}ms")
+
+                            buffer += token
+
+                            # Yield on sentence boundaries
+                            stripped = buffer.rstrip()
+                            if stripped and stripped[-1] in '.!?\n' and len(stripped) >= 10:
+                                yield stripped
+                                buffer = ""
+                    except json.JSONDecodeError:
+                        continue
+
+                # Yield remaining text
+                if buffer.strip():
+                    yield buffer.strip()
+
+                elapsed = (time.time() - start) * 1000
+                print(f"   ⏱️  LLM total: {elapsed:.0f}ms")
+
+    except Exception as e:
+        print(f"❌ OpenRouter error: {e}")
         if conversation_history.messages and conversation_history.messages[-1]["role"] == "user":
             conversation_history.messages.pop()
-        return None
 
 # ============================================================================
-# STREAMING AUDIO PLAYBACK - Zero-Latency TTS
+# TTS + PLAYBACK — ElevenLabs sentence-by-sentence
 # ============================================================================
 
-class StreamingAudioPlayer:
+async def speak_sentence(text: str, temp_file: str = "tts_temp.mp3") -> bool:
     """
-    Streaming ses çalma sistemi.
-    
-    PROBLEM: ElevenLabs'ten gelen tüm ses dosyasını indirip sonra çalmak ~2 saniye latency.
-    ÇÖZÜM: İlk chunk gelir gelmez çalmaya başla, geri kalan chunk'ları buffer'a ekle.
-    
-    KAZANIM: ~2000ms → ~200ms perceived latency (%90 azalma!)
-    
-    NASIL ÇALIŞIR:
-    1. Ana thread: HTTP stream'den chunk'ları indir, buffer'a ekle
-    2. Playback thread: Buffer'dan chunk'ları oku, pygame ile çal
-    3. İlk chunk gelir gelmez playback başlar (streaming!)
+    Convert one sentence to speech via ElevenLabs streaming endpoint and play it.
+    Returns False if interrupted during download or playback.
     """
-    
-    def __init__(self):
-        self.buffer = deque()
-        self.is_streaming = False
-        self.playback_started = False
-        self.temp_file = "streaming_audio.mp3"
-    
-    async def play_streaming_async(self, text: str) -> bool:
-        """
-        Asenkron streaming TTS + playback.
-        
-        Returns:
-            bool: Başarılı oynatıldıysa True, interrupt olduysa False
-        """
-        print("🔊 Ses oluşturuluyor (ElevenLabs Streaming)...")
-        start_time = time.time()
-        
-        try:
-            # ElevenLabs streaming endpoint
-            url = f"{ELEVENLABS_API_URL}/{VOICE_ID}/stream"
-            
-            headers = {
-                "xi-api-key": ELEVENLABS_API_KEY,
-                "Content-Type": "application/json"
+    try:
+        url = f"{ELEVENLABS_TTS_URL}/{VOICE_ID}/stream"
+
+        headers = {
+            "xi-api-key": ELEVENLABS_API_KEY,
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "text": text,
+            "model_id": TTS_MODEL,
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.75
             }
-            
-            payload = {
-                "text": text,
-                "model_id": MODEL_ID,
-                "voice_settings": {
-                    "stability": 0.5,
-                    "similarity_boost": 0.75
-                }
-            }
-            
-            # Async HTTP streaming request
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        print(f"❌ ElevenLabs API hatası ({response.status}): {error_text}")
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    error = await resp.text()
+                    print(f"❌ ElevenLabs error ({resp.status}): {error}")
+                    return False
+
+                # Download audio chunks
+                chunks = []
+                async for chunk in resp.content.iter_chunked(8192):
+                    if state.should_stop_playback:
                         return False
-                    
-                    # BASİTLEŞTİRİLMİŞ YAKLAŞIM: Tüm veriyi topla, sonra çal
-                    # Bu permission denied hatasını tamamen ortadan kaldırır
-                    # Async sayesinde hala çok hızlı (~1-2 saniye)
-                    
-                    print(f"   ⏱️  İndiriliyor...")
-                    
-                    all_chunks = []
-                    async for chunk in response.content.iter_chunked(8192):
-                        if chunk:
-                            # Interrupt kontrolü
-                            if state.should_stop_playback:
-                                print("⚠️  Playback interrupt edildi")
-                                return False
-                            all_chunks.append(chunk)
-                    
-                    # Tüm chunk'ları dosyaya yaz
-                    with open(self.temp_file, 'wb') as f:
-                        for chunk in all_chunks:
-                            f.write(chunk)
-                    
-                    elapsed = (time.time() - start_time) * 1000
-                    print(f"   ⏱️  İndirme tamamlandı: {elapsed:.0f}ms")
-                    print("   ▶️  Çalma başladı")
-                    
-                    # Global state güncelle
-                    state.ai_speaking = True
-                    
-                    # Playback thread'i başlat
-                    playback_thread = threading.Thread(
-                        target=self._play_audio_blocking,
-                        args=(self.temp_file,),
-                        daemon=True
-                    )
-                    playback_thread.start()
-                    state.playback_thread = playback_thread
-                    
-                    # Playback thread'in bitmesini bekle
-                    if state.playback_thread:
-                        await asyncio.get_event_loop().run_in_executor(
-                            None, 
-                            state.playback_thread.join
-                        )
-                    
-                    # Global state güncelle
-                    state.ai_speaking = False
-                    
-                    total_elapsed = (time.time() - start_time) * 1000
-                    print(f"   ⏱️  Toplam TTS+Playback: {total_elapsed:.0f}ms")
-                    
-                    return True
-        
-        except Exception as e:
-            print(f"❌ Streaming playback hatası: {e}")
-            state.ai_speaking = False
-            return False
-    
-    def _play_audio_blocking(self, file_path: str):
-        """
-        Blocking ses çalma (ayrı thread'de çalışacak).
-        
-        NOT: pygame.mixer blocking olduğu için ayrı thread'de çalıştırıyoruz.
-        """
+                    if chunk:
+                        chunks.append(chunk)
+
+                if not chunks or state.should_stop_playback:
+                    return False
+
+                # Write to temp file
+                with open(temp_file, 'wb') as f:
+                    for c in chunks:
+                        f.write(c)
+
+                # Play audio in thread pool (blocking)
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(None, _play_audio_blocking, temp_file)
+
+    except Exception as e:
+        print(f"❌ TTS error: {e}")
+        return False
+
+
+def _play_audio_blocking(file_path: str) -> bool:
+    """Play MP3 via pygame mixer. Returns False if interrupted."""
+    try:
+        pygame.mixer.music.load(file_path)
+        pygame.mixer.music.play()
+
+        while pygame.mixer.music.get_busy():
+            if state.should_stop_playback:
+                pygame.mixer.music.stop()
+                break
+            pygame.time.Clock().tick(30)
+
+        # Unload to release file lock on Windows
+        pygame.mixer.music.unload()
+
+        # Cleanup
         try:
-            # Dosyanın var olduğundan emin ol
-            max_wait = 5  # Maksimum 5 saniye bekle
-            wait_count = 0
-            while not os.path.exists(file_path) and wait_count < max_wait * 10:
-                time.sleep(0.1)
-                wait_count += 1
-            
-            if not os.path.exists(file_path):
-                print(f"❌ Ses dosyası bulunamadı: {file_path}")
-                return
-            
-            pygame.mixer.init()
-            pygame.mixer.music.load(file_path)
-            pygame.mixer.music.play()
-            
-            # Çalma bitene kadar bekle (veya interrupt gelene kadar)
-            while pygame.mixer.music.get_busy():
-                if state.should_stop_playback:
-                    pygame.mixer.music.stop()
-                    break
-                pygame.time.Clock().tick(10)
-            
-            pygame.mixer.quit()
-            
-            # Cleanup
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except:
-                    pass  # Dosya hala kullanımda olabilir
-        
-        except Exception as e:
-            print(f"❌ Playback hatası: {e}")
+            os.remove(file_path)
+        except Exception:
+            pass
+
+        return not state.should_stop_playback
+
+    except Exception as e:
+        print(f"❌ Playback error: {e}")
+        return False
 
 # ============================================================================
-# MAIN ASYNC PIPELINE - Tüm Parçaları Birleştir
+# MAIN PIPELINE — Event-driven conversation loop
 # ============================================================================
 
 async def ultra_fast_pipeline():
     """
-    Ana asenkron pipeline.
-    
-    AKIŞ:
-    1. Ses kaydı (VAD ile otomatik durdurma)
-    2. STT (Google Speech Recognition)
-    3. LLM (Google Gemini)
-    4. TTS + Streaming Playback (ElevenLabs)
-    
-    TÜM AŞAMALAR ASYNC - Blocking I/O yok!
+    Main conversation loop.
+
+    Flow:
+    1. Listen (continuous mic, VAD-based speech detection)
+    2. Transcribe (Groq Whisper, ~0.3s)
+    3. Generate + Speak (streaming LLM → sentence-by-sentence TTS)
+    4. During speaking: background thread monitors mic for interruption
+    5. On interrupt: stop playback, loop back to step 1
     """
     vad = EnhancedVAD()
-    player = StreamingAudioPlayer()
-    audio_file = "ultra_fast_input.wav"
-    
-    # Konuşma geçmişini başlat
+    mic = MicrophoneMonitor(vad)
     conversation_history = ConversationHistory(max_messages=20)
-    
-    print("\n" + "="*60)
-    print("🚀 ULTRA-FAST CORE - Zero-Latency Voice AI")
-    print("="*60 + "\n")
-    
-    while True:
-        try:
-            # Reset interrupt flag
-            state.interrupt_requested = False
-            state.should_stop_playback = False
-            
-            # 1. SES KAYDI (Async)
-            print("\n📍 AŞAMA 1: Ses Kaydı")
-            success = await record_audio_async(audio_file, vad)
-            
-            if not success:
+    audio_file = "ultra_fast_input.wav"
+
+    print("\n" + "=" * 60)
+    print("🚀 ULTRA-FAST CORE v2.0 — Natural Conversation AI")
+    print("=" * 60)
+    print("💡 Speak naturally. You can interrupt me anytime.")
+    print("💡 Say 'çık' or 'kapat' to exit.\n")
+
+    # Initialize pygame mixer once (avoid per-sentence init/quit latency)
+    pygame.mixer.init()
+
+    try:
+        mic.open()
+    except Exception as e:
+        print(f"❌ Microphone error: {e}")
+        return
+
+    try:
+        while True:
+            # Reset state for new turn
+            state.reset_interrupt()
+            state.set_state(ConversationState.IDLE)
+
+            # ── PHASE 1: Listen ──────────────────────────────────────
+            print("🎤 Listening...")
+            state.set_state(ConversationState.LISTENING)
+
+            pcm_data = await asyncio.get_event_loop().run_in_executor(
+                None, mic.record_until_silence
+            )
+
+            if pcm_data is None:
                 continue
-            
-            # 2. STT (Async)
-            print("\n📍 AŞAMA 2: Ses → Yazı Dönüşümü")
-            user_text = await transcribe_audio_async(audio_file)
-            
+
+            mic.save_wav(pcm_data, audio_file)
+
+            # ── PHASE 2: Transcribe ──────────────────────────────────
+            state.set_state(ConversationState.PROCESSING)
+
+            user_text = await transcribe_groq(audio_file)
+
             if not user_text:
+                print("⚠️  Could not understand audio, try again")
                 continue
-            
-            print(f"🗣️  Sen: {user_text}")
-            
-            # Çıkış komutu kontrolü
-            if "çık" in user_text.lower() or "kapat" in user_text.lower():
+
+            print(f"🗣️  You: {user_text}")
+
+            # Exit command
+            if any(w in user_text.lower() for w in ["çık", "kapat", "exit", "quit"]):
                 print("\n👋 Görüşmek üzere!")
                 break
-            
-            # 3. LLM (Async) - Konuşma geçmişi ile
-            print("\n📍 AŞAMA 3: AI Yanıt Üretimi")
-            ai_text = await get_ai_response_async(user_text, conversation_history)
-            
-            if not ai_text or ai_text.strip() == "":
-                print("⚠️  AI boş cevap döndürdü, tekrar dene")
-                continue
-            
-            # 4. TTS + STREAMING PLAYBACK (Async)
-            print("\n📍 AŞAMA 4: Ses Sentezi ve Çalma")
-            await player.play_streaming_async(ai_text)
-            
-            print("\n" + "-"*60)
-        
-        except KeyboardInterrupt:
-            print("\n\n⚠️  Kullanıcı tarafından durduruldu (Ctrl+C)")
-            break
-        
-        except Exception as e:
-            print(f"\n❌ Beklenmeyen hata: {e}")
-            import traceback
-            traceback.print_exc()
+
+            # ── PHASE 3: Generate + Speak (streaming) ────────────────
+            state.set_state(ConversationState.SPEAKING)
+
+            # Start interrupt monitoring (background thread reads mic)
+            mic.start_interrupt_monitor()
+
+            full_response = ""
+            sentence_count = 0
+            interrupted = False
+
+            async for sentence in stream_llm_response(user_text, conversation_history):
+                if state.interrupt_requested:
+                    interrupted = True
+                    break
+
+                sentence_count += 1
+                full_response += sentence + " "
+
+                # Print response
+                if sentence_count == 1:
+                    print(f"🤖 AI: {sentence}", end="", flush=True)
+                else:
+                    print(f" {sentence}", end="", flush=True)
+
+                # Speak this sentence (blocks until playback finishes or interrupt)
+                success = await speak_sentence(sentence)
+
+                if not success or state.interrupt_requested:
+                    interrupted = True
+                    break
+
+            print()  # Newline after response
+
+            # Stop interrupt monitor
+            mic.stop_interrupt_monitor()
+
+            # Save whatever response we got to history
+            if full_response.strip():
+                conversation_history.add_assistant_message(full_response.strip())
+
+            if interrupted:
+                print("⚡ Interrupted! Listening to you...")
+
+            msg_count = conversation_history.get_message_count()
+            print(f"   💬 History: {msg_count} messages")
+            print("-" * 60)
+
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Stopped by user (Ctrl+C)")
+    finally:
+        mic.stop_interrupt_monitor()
+        mic.close()
+        try:
+            pygame.mixer.quit()
+        except Exception:
+            pass
 
 # ============================================================================
 # ENTRY POINT
 # ============================================================================
 
 if __name__ == "__main__":
-    # Pygame başlat (mixer için gerekli)
     pygame.init()
-    
-    # Ana async event loop'u çalıştır
     try:
         asyncio.run(ultra_fast_pipeline())
     except KeyboardInterrupt:
-        print("\n👋 Program sonlandırıldı.")
+        print("\n👋 Program terminated.")
     finally:
         pygame.quit()

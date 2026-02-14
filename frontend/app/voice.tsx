@@ -12,6 +12,10 @@ import { API_BASE_URL } from "../services/api";
  * it over WebSocket to the backend (which proxies to Gemini Live API).
  * Receives PCM audio responses and plays them back.
  *
+ * Barge-in: Backend sends {"type":"turn_end"} when turn ends (interrupted or
+ * complete). Client clears playback queue and stops scheduled sources.
+ * Client-side VAD stops playback immediately when user starts speaking.
+ *
  * Audio format:
  *   Send:    16kHz, mono, 16-bit PCM (Int16)
  *   Receive: 24kHz, mono, 16-bit PCM (Int16)
@@ -20,6 +24,9 @@ import { API_BASE_URL } from "../services/api";
 const WS_BASE_URL = API_BASE_URL.replace(/^http/, "ws");
 const SEND_SAMPLE_RATE = 16000;
 const RECEIVE_SAMPLE_RATE = 24000;
+const CHUNK_SIZE = 1024; // ~64ms at 16kHz (matches Python script; lower latency than 4096)
+const VAD_THRESHOLD = 0.02; // RMS threshold for "user speaking"
+const VAD_CONSECUTIVE = 2; // buffers above threshold = barge-in
 
 type SessionState = "connecting" | "active" | "ended" | "error";
 
@@ -37,7 +44,9 @@ export default function VoiceScreen() {
     const streamRef = useRef<MediaStream | null>(null);
     const processorRef = useRef<ScriptProcessorNode | null>(null);
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-    const nextPlayTimeRef = useRef<number>(0); // schedule audio chunks sequentially
+    const nextPlayTimeRef = useRef<number>(0);
+    const scheduledSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+    const vadCountRef = useRef(0);
 
     // Pulsing animation
     const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -89,6 +98,17 @@ export default function VoiceScreen() {
         return int16.buffer;
     };
 
+    /** Stop all playback and clear queue — called on turn_end or user barge-in */
+    const clearPlaybackQueue = useCallback(() => {
+        scheduledSourcesRef.current.forEach((src) => {
+            try { src.stop(0); } catch { /* already stopped */ }
+        });
+        scheduledSourcesRef.current.clear();
+        if (playbackCtxRef.current) {
+            nextPlayTimeRef.current = playbackCtxRef.current.currentTime;
+        }
+    }, []);
+
     /** Play received PCM Int16 audio at 24kHz — queued sequentially */
     const playAudioChunk = useCallback((pcmData: ArrayBuffer) => {
         try {
@@ -110,8 +130,9 @@ export default function VoiceScreen() {
             const source = ctx.createBufferSource();
             source.buffer = audioBuffer;
             source.connect(ctx.destination);
+            scheduledSourcesRef.current.add(source);
+            source.onended = () => scheduledSourcesRef.current.delete(source);
 
-            // Schedule this chunk to play after the previous one ends
             const now = ctx.currentTime;
             const startTime = Math.max(now, nextPlayTimeRef.current);
             source.start(startTime);
@@ -143,8 +164,7 @@ export default function VoiceScreen() {
             audioCtxRef.current = audioCtx;
 
             const source = audioCtx.createMediaStreamSource(stream);
-            // ScriptProcessorNode with 4096 buffer size, 1 input channel, 1 output channel
-            const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+            const processor = audioCtx.createScriptProcessor(CHUNK_SIZE, 1, 1);
             processorRef.current = processor;
 
             // 3. Connect WebSocket
@@ -158,12 +178,25 @@ export default function VoiceScreen() {
                 setSessionState("active");
                 setVoiceStatus("active");
 
-                // Wire up audio processing — send PCM chunks to WebSocket
+                // Wire up audio processing — send PCM chunks + client-side VAD for barge-in
                 processor.onaudioprocess = (e) => {
+                    const inputData = e.inputBuffer.getChannelData(0);
                     if (ws.readyState === WebSocket.OPEN) {
-                        const inputData = e.inputBuffer.getChannelData(0);
-                        const pcmBytes = float32ToInt16(inputData);
-                        ws.send(pcmBytes);
+                        ws.send(float32ToInt16(inputData));
+                    }
+                    // Client-side VAD: stop playback immediately when user speaks
+                    let sumSq = 0;
+                    for (let i = 0; i < inputData.length; i++) {
+                        sumSq += inputData[i] * inputData[i];
+                    }
+                    const rms = Math.sqrt(sumSq / inputData.length);
+                    if (rms > VAD_THRESHOLD) {
+                        vadCountRef.current += 1;
+                        if (vadCountRef.current >= VAD_CONSECUTIVE && scheduledSourcesRef.current.size > 0) {
+                            clearPlaybackQueue();
+                        }
+                    } else {
+                        vadCountRef.current = 0;
                     }
                 };
 
@@ -173,6 +206,15 @@ export default function VoiceScreen() {
             };
 
             ws.onmessage = (event) => {
+                if (typeof event.data === "string") {
+                    try {
+                        const msg = JSON.parse(event.data);
+                        if (msg.type === "turn_end") {
+                            clearPlaybackQueue();
+                        }
+                    } catch { /* ignore non-JSON */ }
+                    return;
+                }
                 if (event.data instanceof ArrayBuffer && event.data.byteLength > 0) {
                     playAudioChunk(event.data);
                 }

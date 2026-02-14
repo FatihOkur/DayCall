@@ -5,10 +5,13 @@ Ported from DayCallAIModel/server.py into the main backend.
 
 PROTOCOL:
     Client sends:    raw PCM bytes (16kHz, mono, 16-bit)
-    Server responds: raw PCM bytes (24kHz, mono, 16-bit)
+    Server responds: raw PCM bytes (24kHz, mono, 16-bit) OR JSON control messages
+    Control:         {"type": "turn_end"} — sent when Gemini turn ends (completed
+                     or interrupted by user). Client should clear playback queue.
 """
 
 import asyncio
+import json
 import logging
 
 import jwt
@@ -127,7 +130,13 @@ async def _gemini_to_client(
     gemini_session,
     user_email: str,
 ):
-    """Receive audio from Gemini and forward to mobile client."""
+    """
+    Receive audio from Gemini and forward to mobile client.
+
+    When a turn ends (model finished OR user interrupted), send a turn_end
+    control message so the client can clear its playback queue immediately.
+    This matches the Python direct_voice_agent behavior for natural barge-in.
+    """
     try:
         while True:
             turn = gemini_session.receive()
@@ -142,6 +151,13 @@ async def _gemini_to_client(
                                 await websocket.send_bytes(part.inline_data.data)
                             except Exception:
                                 return
+
+            # Turn ended (completed or interrupted). Signal client to clear
+            # playback queue — same as Python script clearing audio_queue_output.
+            try:
+                await websocket.send_text(json.dumps({"type": "turn_end"}))
+            except Exception:
+                return
     except WebSocketDisconnect:
         raise
     except Exception as e:

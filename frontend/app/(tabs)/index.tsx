@@ -1,5 +1,6 @@
 import { View, Text, Pressable } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { router } from "expo-router";
 
 /**
  * Journal Timeline — Main screen.
@@ -50,7 +51,7 @@ export default function JournalScreen() {
                 {/* Floating Action Button — Start Voice Session */}
                 <Pressable
                     onPress={() => {
-                        // TODO: Navigate to voice session screen
+                        router.push("/voice");
                     }}
                     style={({ pressed }) => ({
                         position: "absolute",

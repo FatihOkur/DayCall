@@ -1,13 +1,15 @@
-import { View, Text, Switch } from "react-native";
+import { View, Text, Switch, Pressable } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useState } from "react";
+import { useAppStore } from "../../store/useAppStore";
 
 /**
- * Settings screen — notification preferences and account settings.
- * Placeholder for now; will be connected to the backend in Phase 2.
+ * Settings screen — notification preferences, account info, and logout.
  */
 export default function SettingsScreen() {
     const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+    const user = useAppStore((s) => s.user);
+    const logout = useAppStore((s) => s.logout);
 
     return (
         <SafeAreaView
@@ -78,7 +80,9 @@ export default function SettingsScreen() {
                             Reminder Time
                         </Text>
                         <Text style={{ fontSize: 15, color: "#DA7756", marginTop: 4 }}>
-                            8:00 PM
+                            {user
+                                ? `${user.notificationHour}:${String(user.notificationMinute).padStart(2, "0")} ${user.notificationHour >= 12 ? "PM" : "AM"}`
+                                : "8:00 PM"}
                         </Text>
                     </View>
                 </View>
@@ -108,9 +112,98 @@ export default function SettingsScreen() {
                         borderColor: "#E5DFD5",
                     }}
                 >
-                    <Text style={{ fontSize: 15, color: "#A69B8D", textAlign: "center" }}>
-                        Login coming in Phase 2
-                    </Text>
+                    {user ? (
+                        <>
+                            <View style={{ marginBottom: 16 }}>
+                                <Text
+                                    style={{
+                                        fontSize: 13,
+                                        color: "#A69B8D",
+                                        marginBottom: 2,
+                                    }}
+                                >
+                                    Email
+                                </Text>
+                                <Text
+                                    style={{
+                                        fontSize: 16,
+                                        color: "#2D2926",
+                                        fontWeight: "500",
+                                    }}
+                                >
+                                    {user.email}
+                                </Text>
+                            </View>
+
+                            {user.displayName ? (
+                                <View
+                                    style={{
+                                        borderTopWidth: 1,
+                                        borderTopColor: "#E5DFD5",
+                                        paddingTop: 16,
+                                        marginBottom: 16,
+                                    }}
+                                >
+                                    <Text
+                                        style={{
+                                            fontSize: 13,
+                                            color: "#A69B8D",
+                                            marginBottom: 2,
+                                        }}
+                                    >
+                                        Display Name
+                                    </Text>
+                                    <Text
+                                        style={{
+                                            fontSize: 16,
+                                            color: "#2D2926",
+                                            fontWeight: "500",
+                                        }}
+                                    >
+                                        {user.displayName}
+                                    </Text>
+                                </View>
+                            ) : null}
+
+                            <View
+                                style={{
+                                    borderTopWidth: 1,
+                                    borderTopColor: "#E5DFD5",
+                                    paddingTop: 16,
+                                }}
+                            >
+                                <Pressable
+                                    onPress={logout}
+                                    style={({ pressed }) => ({
+                                        backgroundColor: pressed ? "#FEF2F2" : "transparent",
+                                        borderRadius: 8,
+                                        padding: 12,
+                                        alignItems: "center",
+                                    })}
+                                >
+                                    <Text
+                                        style={{
+                                            color: "#DC2626",
+                                            fontSize: 16,
+                                            fontWeight: "500",
+                                        }}
+                                    >
+                                        Sign Out
+                                    </Text>
+                                </Pressable>
+                            </View>
+                        </>
+                    ) : (
+                        <Text
+                            style={{
+                                fontSize: 15,
+                                color: "#A69B8D",
+                                textAlign: "center",
+                            }}
+                        >
+                            Not logged in
+                        </Text>
+                    )}
                 </View>
 
                 {/* Version */}

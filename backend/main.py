@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db, close_db
-from app.routers import health
+from app.routers import auth, health, voice
 
 # Logging
 logging.basicConfig(
@@ -63,12 +63,12 @@ app.add_middleware(
 
 # Routers
 app.include_router(health.router)
+app.include_router(auth.router)
+app.include_router(voice.router)
 
 # Future routers (uncomment as implemented):
-# app.include_router(auth.router, prefix="/auth")
 # app.include_router(journal.router, prefix="/journal")
 # app.include_router(settings.router, prefix="/settings")
-# app.include_router(voice.router)
 
 
 # ============================================================================

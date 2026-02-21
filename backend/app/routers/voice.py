@@ -106,17 +106,81 @@ async def audio_websocket(
         logger.info(f"[{user_email}] Voice session ended (active: {active_voice_connections})")
 
 
+def _parse_audio(data: bytes) -> tuple[bytes, str]:
+    """
+    Inspect incoming audio bytes and return (payload, mime_type) for Gemini.
+
+    Supported inputs:
+      - RIFF/WAVE (WAV with Linear PCM) → strip header → audio/pcm;rate=<N>
+      - raw PCM (no header)             → audio/pcm;rate=16000 (assumed)
+      - anything else (m4a, aac…)       → rejected by Gemini; log a warning
+
+    Returns the raw payload bytes and the Gemini-compatible MIME type.
+    """
+    import struct
+
+    # ── WAV / RIFF container ────────────────────────────────────────────────
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        sample_rate = 16000  # default
+        try:
+            # Walk chunks to find 'fmt ' (sample rate) and 'data' (PCM payload)
+            offset = 12
+            fmt_found = False
+            while offset + 8 <= len(data):
+                chunk_id = data[offset:offset + 4]
+                chunk_size = struct.unpack_from("<I", data, offset + 4)[0]
+                if chunk_id == b"fmt " and chunk_size >= 16:
+                    sample_rate = struct.unpack_from("<I", data, offset + 8 + 4)[0]
+                    fmt_found = True
+                elif chunk_id == b"data":
+                    pcm = data[offset + 8: offset + 8 + chunk_size]
+                    return pcm, f"audio/pcm;rate={sample_rate}"
+                offset += 8 + chunk_size
+        except Exception:
+            pass
+        # Fallback: skip standard 44-byte RIFF header
+        return data[44:], f"audio/pcm;rate={sample_rate}"
+
+    # ── AAC ADTS ────────────────────────────────────────────────────────────
+    if len(data) >= 2 and data[0] == 0xFF and data[1] in (0xF1, 0xF9):
+        logger.warning("Received AAC/ADTS — Gemini requires PCM. Check recording format.")
+        return data, "audio/pcm"  # will likely be rejected; best-effort
+
+    # ── M4A / MP4 container ─────────────────────────────────────────────────
+    if len(data) >= 8 and data[4:8] == b"ftyp":
+        logger.warning("Received M4A — Gemini requires PCM. Check recording format.")
+        return data, "audio/pcm"  # will likely be rejected; best-effort
+
+    # ── Assume raw PCM (no header) ──────────────────────────────────────────
+    return data, "audio/pcm;rate=16000"
+
+
 async def _client_to_gemini(
     websocket: WebSocket,
     gemini_session,
     user_email: str,
 ):
-    """Receive audio from mobile client and forward to Gemini."""
+    """Receive audio from mobile client and forward to Gemini.
+    Supports WAV (Linear PCM) from expo-av and raw PCM.
+    WAV headers are stripped; raw PCM + sample rate sent to Gemini.
+    """
+    detected_log = False
     try:
         while True:
             audio_data = await websocket.receive_bytes()
+            if not audio_data:
+                continue
+
+            pcm_data, mime_type = _parse_audio(audio_data)
+            if not detected_log:
+                detected_log = True
+                logger.info(f"[{user_email}] Audio format: {mime_type} ({len(pcm_data)} bytes/chunk)")
+
+            if not pcm_data:
+                continue
+
             await gemini_session.send_realtime_input(
-                audio={"data": audio_data, "mime_type": "audio/pcm"}
+                audio={"data": pcm_data, "mime_type": mime_type}
             )
     except WebSocketDisconnect:
         raise
@@ -133,31 +197,54 @@ async def _gemini_to_client(
     """
     Receive audio from Gemini and forward to mobile client.
 
-    When a turn ends (model finished OR user interrupted), send a turn_end
-    control message so the client can clear its playback queue immediately.
-    This matches the Python direct_voice_agent behavior for natural barge-in.
+    Critical: session.receive() must be called ONCE and iterated as an async
+    generator. Each response has .data for audio bytes and .server_content for
+    metadata. The old pattern (while True: turn = receive()) was incorrect.
     """
     try:
-        while True:
-            turn = gemini_session.receive()
-            async for response in turn:
-                if (
-                    response.server_content
-                    and response.server_content.model_turn
-                ):
-                    for part in response.server_content.model_turn.parts:
-                        if part.inline_data and isinstance(part.inline_data.data, bytes):
+        audio_chunks_sent = 0
+        async for response in gemini_session.receive():
+            # ── Audio data ──────────────────────────────────────────────────
+            # response.data is the convenience property for PCM audio bytes
+            if response.data:
+                audio_chunks_sent += 1
+                if audio_chunks_sent == 1:
+                    logger.info(f"[{user_email}] Gemini audio streaming started")
+                try:
+                    await websocket.send_bytes(response.data)
+                except Exception:
+                    return
+
+            # ── Also check inline_data in parts (older SDK versions) ────────
+            if (
+                response.server_content
+                and response.server_content.model_turn
+            ):
+                for part in response.server_content.model_turn.parts:
+                    if part.inline_data and part.inline_data.data:
+                        raw = part.inline_data.data
+                        payload = bytes(raw) if not isinstance(raw, bytes) else raw
+                        if payload:
+                            audio_chunks_sent += 1
                             try:
-                                await websocket.send_bytes(part.inline_data.data)
+                                await websocket.send_bytes(payload)
                             except Exception:
                                 return
 
-            # Turn ended (completed or interrupted). Signal client to clear
-            # playback queue — same as Python script clearing audio_queue_output.
-            try:
-                await websocket.send_text(json.dumps({"type": "turn_end"}))
-            except Exception:
-                return
+            # ── Turn complete ────────────────────────────────────────────────
+            if (
+                response.server_content
+                and response.server_content.turn_complete
+            ):
+                logger.info(
+                    f"[{user_email}] Turn complete ({audio_chunks_sent} audio chunks sent)"
+                )
+                audio_chunks_sent = 0
+                try:
+                    await websocket.send_text(json.dumps({"type": "turn_end"}))
+                except Exception:
+                    return
+
     except WebSocketDisconnect:
         raise
     except Exception as e:

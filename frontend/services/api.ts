@@ -7,10 +7,22 @@
 
 import { useAppStore } from "../store/useAppStore";
 import { Platform } from "react-native";
+import Constants from "expo-constants";
 
-// Android emulator uses 10.0.2.2 to reach host, iOS sim / web use localhost
+// Dynamically resolve the backend host:
+// - Android emulator → 10.0.2.2 (special alias for host machine)
+// - Physical device / Expo Go → use the same host IP Expo dev server is on
+// - Web / iOS simulator → localhost
 const getBaseUrl = () => {
     if (Platform.OS === "android") return "http://10.0.2.2:8000";
+
+    // On a physical device, grab host from Expo's dev server URI
+    const hostUri = Constants.expoConfig?.hostUri;
+    if (hostUri) {
+        const host = hostUri.split(":")[0]; // strip port
+        return `http://${host}:8000`;
+    }
+
     return "http://localhost:8000";
 };
 

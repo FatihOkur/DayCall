@@ -6,13 +6,15 @@ Ported from DayCallAIModel/server.py into the main backend.
 PROTOCOL:
     Client sends:    raw PCM bytes (16kHz, mono, 16-bit)
     Server responds: raw PCM bytes (24kHz, mono, 16-bit) OR JSON control messages
-    Control:         {"type": "turn_end"}    — Gemini turn complete; play buffered audio
+    Control:         {"type": "turn_start"}  — new AI turn; reset playback buffers
+                     {"type": "turn_end"}    — Gemini turn complete; play buffered audio
                      {"type": "interrupted"} — user interrupted; discard buffered audio
 """
 
 import asyncio
 import json
 import logging
+import time
 
 import jwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
@@ -210,7 +212,9 @@ async def _gemini_to_client(
     try:
         while True:  # one iteration per AI turn
             audio_chunks_sent = 0
+            audio_bytes_sent = 0
             was_interrupted = False
+            turn_start_time = time.monotonic()
 
             async for response in gemini_session.receive():
                 # ── Audio data ───────────────────────────────────────────────
@@ -224,14 +228,52 @@ async def _gemini_to_client(
                             payload = bytes(raw) if not isinstance(raw, bytes) else raw
                             if payload:
                                 audio_chunks_sent += 1
+                                audio_bytes_sent += len(payload)
                                 if audio_chunks_sent == 1:
                                     logger.info(
-                                        f"[{user_email}] Gemini audio streaming started"
+                                        f"[{user_email}] Gemini audio streaming "
+                                        f"started ({len(payload)}B first chunk)"
                                     )
+                                    # Signal client to reset playback state
+                                    try:
+                                        await websocket.send_text(
+                                            json.dumps({"type": "turn_start"})
+                                        )
+                                    except Exception:
+                                        return
                                 try:
                                     await websocket.send_bytes(payload)
                                 except Exception:
                                     return
+
+                # ── Transcription ────────────────────────────────────────────
+                # Forward user/model transcripts so the client can show them.
+                if response.server_content:
+                    sc = response.server_content
+
+                    # User speech transcript
+                    it = getattr(sc, "input_transcription", None)
+                    if it and getattr(it, "text", None):
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "type": "transcript",
+                                "role": "user",
+                                "text": it.text,
+                            }))
+                        except Exception:
+                            return
+
+                    # Model speech transcript
+                    ot = getattr(sc, "output_transcription", None)
+                    if ot and getattr(ot, "text", None):
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "type": "transcript",
+                                "role": "model",
+                                "text": ot.text,
+                            }))
+                        except Exception:
+                            return
 
                 # ── User interrupted ─────────────────────────────────────────
                 # Gemini's server-side VAD detected user speech mid-response.
@@ -241,7 +283,11 @@ async def _gemini_to_client(
                     and response.server_content.interrupted
                 ):
                     was_interrupted = True
-                    logger.info(f"[{user_email}] Turn interrupted by user")
+                    elapsed = time.monotonic() - turn_start_time
+                    logger.info(
+                        f"[{user_email}] Turn interrupted after {elapsed:.1f}s "
+                        f"({audio_chunks_sent} chunks, {audio_bytes_sent}B)"
+                    )
                     try:
                         await websocket.send_text(json.dumps({"type": "interrupted"}))
                     except Exception:
@@ -257,8 +303,10 @@ async def _gemini_to_client(
 
             # After inner loop: send turn_end only for natural completions
             if not was_interrupted:
+                elapsed = time.monotonic() - turn_start_time
                 logger.info(
-                    f"[{user_email}] Turn complete ({audio_chunks_sent} audio chunks sent)"
+                    f"[{user_email}] Turn complete in {elapsed:.1f}s "
+                    f"({audio_chunks_sent} chunks, {audio_bytes_sent}B)"
                 )
                 try:
                     await websocket.send_text(json.dumps({"type": "turn_end"}))

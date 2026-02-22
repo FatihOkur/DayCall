@@ -29,4 +29,7 @@ def get_gemini_config() -> dict:
     return {
         "response_modalities": ["AUDIO"],
         "system_instruction": settings.SYSTEM_PROMPT,
+        # Enable transcription so we receive text alongside audio
+        "input_audio_transcription": {},
+        "output_audio_transcription": {},
     }

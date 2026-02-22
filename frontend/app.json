@@ -1,38 +1,47 @@
 {
-    "expo": {
-        "name": "DayCall",
-        "slug": "daycall",
-        "version": "0.1.0",
-        "orientation": "portrait",
-        "icon": "./assets/icon.png",
-        "scheme": "daycall",
-        "userInterfaceStyle": "light",
-        "newArchEnabled": true,
-        "splash": {
-            "image": "./assets/splash-icon.png",
-            "resizeMode": "contain",
-            "backgroundColor": "#F5F2EB"
-        },
-        "ios": {
-            "supportsTablet": false,
-            "bundleIdentifier": "com.daycall.app",
-            "infoPlist": {
-                "NSMicrophoneUsageDescription": "DayCall needs microphone access for voice journal sessions."
-            }
-        },
-        "android": {
-            "adaptiveIcon": {
-                "foregroundImage": "./assets/adaptive-icon.png",
-                "backgroundColor": "#F5F2EB"
-            },
-            "package": "com.daycall.app",
-            "permissions": [
-                "RECORD_AUDIO"
-            ]
-        },
-        "plugins": [
-            "expo-router",
-            "expo-secure-store"
-        ]
-    }
+  "expo": {
+    "name": "DayCall",
+    "slug": "daycall",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "daycall",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F5F2EB"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.daycall.app",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "DayCall needs microphone access for voice journal sessions.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#F5F2EB"
+      },
+      "package": "com.daycall.app",
+      "permissions": [
+        "RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-asset"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3e3cc32c-4cc8-4cc7-9375-31be879d36ef"
+      }
+    },
+    "owner": "daycall"
+  }
 }

@@ -6,8 +6,8 @@ Ported from DayCallAIModel/server.py into the main backend.
 PROTOCOL:
     Client sends:    raw PCM bytes (16kHz, mono, 16-bit)
     Server responds: raw PCM bytes (24kHz, mono, 16-bit) OR JSON control messages
-    Control:         {"type": "turn_end"} — sent when Gemini turn ends (completed
-                     or interrupted by user). Client should clear playback queue.
+    Control:         {"type": "turn_end"}    — Gemini turn complete; play buffered audio
+                     {"type": "interrupted"} — user interrupted; discard buffered audio
 """
 
 import asyncio
@@ -197,49 +197,69 @@ async def _gemini_to_client(
     """
     Receive audio from Gemini and forward to mobile client.
 
-    Critical: session.receive() must be called ONCE and iterated as an async
-    generator. Each response has .data for audio bytes and .server_content for
-    metadata. The old pattern (while True: turn = receive()) was incorrect.
+    Uses the per-turn receive() pattern from DayCallAIModel/server.py:
+    each call to gemini_session.receive() creates an isolated generator for
+    one AI turn. When the inner async-for exhausts (turn_complete or
+    interrupted), the outer while-True restarts a fresh generator for the
+    next turn. This avoids cross-turn state leakage that can occur when a
+    single persistent generator spans multiple turns.
+
+    Audio is extracted from server_content.model_turn.parts directly —
+    the response.data shortcut behaves inconsistently across SDK versions.
     """
     try:
-        audio_chunks_sent = 0
-        async for response in gemini_session.receive():
-            # ── Audio data ──────────────────────────────────────────────────
-            # response.data is the convenience property for PCM audio bytes
-            if response.data:
-                audio_chunks_sent += 1
-                if audio_chunks_sent == 1:
-                    logger.info(f"[{user_email}] Gemini audio streaming started")
-                try:
-                    await websocket.send_bytes(response.data)
-                except Exception:
-                    return
+        while True:  # one iteration per AI turn
+            audio_chunks_sent = 0
+            was_interrupted = False
 
-            # ── Also check inline_data in parts (older SDK versions) ────────
-            if (
-                response.server_content
-                and response.server_content.model_turn
-            ):
-                for part in response.server_content.model_turn.parts:
-                    if part.inline_data and part.inline_data.data:
-                        raw = part.inline_data.data
-                        payload = bytes(raw) if not isinstance(raw, bytes) else raw
-                        if payload:
-                            audio_chunks_sent += 1
-                            try:
-                                await websocket.send_bytes(payload)
-                            except Exception:
-                                return
+            async for response in gemini_session.receive():
+                # ── Audio data ───────────────────────────────────────────────
+                if (
+                    response.server_content
+                    and response.server_content.model_turn
+                ):
+                    for part in response.server_content.model_turn.parts:
+                        if part.inline_data and part.inline_data.data:
+                            raw = part.inline_data.data
+                            payload = bytes(raw) if not isinstance(raw, bytes) else raw
+                            if payload:
+                                audio_chunks_sent += 1
+                                if audio_chunks_sent == 1:
+                                    logger.info(
+                                        f"[{user_email}] Gemini audio streaming started"
+                                    )
+                                try:
+                                    await websocket.send_bytes(payload)
+                                except Exception:
+                                    return
 
-            # ── Turn complete ────────────────────────────────────────────────
-            if (
-                response.server_content
-                and response.server_content.turn_complete
-            ):
+                # ── User interrupted ─────────────────────────────────────────
+                # Gemini's server-side VAD detected user speech mid-response.
+                # Signal the client to abort playback; mic is already running.
+                if (
+                    response.server_content
+                    and response.server_content.interrupted
+                ):
+                    was_interrupted = True
+                    logger.info(f"[{user_email}] Turn interrupted by user")
+                    try:
+                        await websocket.send_text(json.dumps({"type": "interrupted"}))
+                    except Exception:
+                        return
+                    break  # exit inner loop; outer while-True starts fresh turn
+
+                # ── Turn complete ────────────────────────────────────────────
+                if (
+                    response.server_content
+                    and response.server_content.turn_complete
+                ):
+                    break  # exit inner loop; send turn_end below
+
+            # After inner loop: send turn_end only for natural completions
+            if not was_interrupted:
                 logger.info(
                     f"[{user_email}] Turn complete ({audio_chunks_sent} audio chunks sent)"
                 )
-                audio_chunks_sent = 0
                 try:
                     await websocket.send_text(json.dumps({"type": "turn_end"}))
                 except Exception:

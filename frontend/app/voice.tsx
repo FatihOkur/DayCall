@@ -13,7 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Audio } from "expo-av";
 import LiveAudioStream from "react-native-live-audio-stream";
-import { forceToSpeaker } from "../modules/audio-route";
+import InCallManager from "react-native-incall-manager";
 import { useAppStore } from "../store/useAppStore";
 import { API_BASE_URL } from "../services/api";
 
@@ -79,7 +79,7 @@ const PCM_OPTIONS = {
     wavFile: "",
 };
 
-const EARLY_PLAY_BYTES = 4800; // ~100ms at 24kHz/16-bit
+const EARLY_PLAY_BYTES = 48000; // ~1s at 24kHz/16-bit — matches Gemini chunk size
 
 type SessionState = "connecting" | "active" | "ended" | "error";
 
@@ -319,11 +319,15 @@ export default function VoiceScreen() {
 
                 LiveAudioStream.start();
 
-                // Force iOS audio to main loudspeaker
-                if (Platform.OS === "ios") {
-                    forceToSpeaker().catch((e: any) =>
-                        console.warn("[DayCall] forceToSpeaker:", e)
-                    );
+                // Force audio through the main loudspeaker (not earpiece).
+                // InCallManager.start() sets up the audio routing for voice calls,
+                // and setForceSpeakerphoneOn(true) overrides to loudspeaker.
+                try {
+                    InCallManager.start({ media: "audio" });
+                    InCallManager.setForceSpeakerphoneOn(true);
+                    console.log("[DayCall] Speaker mode forced on via InCallManager");
+                } catch (e: any) {
+                    console.warn("[DayCall] InCallManager speaker routing failed:", e);
                 }
             };
 
@@ -401,6 +405,7 @@ export default function VoiceScreen() {
         await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(
             () => { }
         );
+        try { InCallManager.stop(); } catch { }
         if (wsRef.current) {
             wsRef.current.close();
             wsRef.current = null;

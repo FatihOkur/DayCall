@@ -14,6 +14,7 @@ import { router } from "expo-router";
 import { Audio } from "expo-av";
 import LiveAudioStream from "react-native-live-audio-stream";
 import InCallManager from "react-native-incall-manager";
+import { initAec, stopAec } from "../services/WebRTCAecService";
 import { useAppStore } from "../store/useAppStore";
 import { API_BASE_URL } from "../services/api";
 
@@ -41,6 +42,17 @@ function pcmToDataUri(pcm: ArrayBuffer, sampleRate = 24000): string {
     const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
     const blockAlign = (numChannels * bitsPerSample) / 8;
     const dataSize = pcm.byteLength;
+
+    // Amplify PCM samples (iOS playAndRecord mode has lower gain)
+    const GAIN = 2.0;
+    const src = new Int16Array(pcm);
+    const boosted = new Int16Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+        const v = src[i] * GAIN;
+        boosted[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+    }
+    const boostedBytes = new Uint8Array(boosted.buffer);
+
     const wav = new ArrayBuffer(44 + dataSize);
     const v = new DataView(wav);
     v.setUint32(0, 0x52494646, false);  // "RIFF"
@@ -56,7 +68,7 @@ function pcmToDataUri(pcm: ArrayBuffer, sampleRate = 24000): string {
     v.setUint16(34, bitsPerSample, true);
     v.setUint32(36, 0x64617461, false); // "data"
     v.setUint32(40, dataSize, true);
-    new Uint8Array(wav, 44).set(new Uint8Array(pcm));
+    new Uint8Array(wav, 44).set(boostedBytes);
 
     const u8 = new Uint8Array(wav);
     const CHUNK = 8192;
@@ -291,11 +303,34 @@ export default function VoiceScreen() {
             wsRef.current = ws;
             ws.binaryType = "arraybuffer";
 
-            ws.onopen = () => {
+            ws.onopen = async () => {
                 console.log("[DayCall] WebSocket connected");
                 setSessionState("active");
                 setVoiceStatus("active");
 
+                // 1. Speaker routing first
+                try {
+                    InCallManager.start({
+                        media: "audio",
+                        auto: true,
+                    });
+                    InCallManager.setForceSpeakerphoneOn(true);
+                    console.log("[DayCall] Speaker enabled via InCallManager");
+                } catch (e: any) {
+                    console.warn("[DayCall] InCallManager failed:", e);
+                }
+
+                // 2. WebRTC AEC — must init BEFORE LiveAudioStream
+                //    getUserMedia grabs the mic with AEC constraints,
+                //    then LiveAudioStream captures AEC-processed audio.
+                try {
+                    await initAec();
+                } catch (e: any) {
+                    console.warn("[DayCall] WebRTC AEC init failed:", e);
+                }
+
+                // 3. Start mic capture (safety stop first for re-init)
+                try { LiveAudioStream.stop(); } catch { }
                 LiveAudioStream.init(PCM_OPTIONS);
 
                 audioSubRef.current = LiveAudioStream.on(
@@ -318,17 +353,7 @@ export default function VoiceScreen() {
                 ) as unknown as { remove: () => void };
 
                 LiveAudioStream.start();
-
-                // Force audio through the main loudspeaker (not earpiece).
-                // InCallManager.start() sets up the audio routing for voice calls,
-                // and setForceSpeakerphoneOn(true) overrides to loudspeaker.
-                try {
-                    InCallManager.start({ media: "audio" });
-                    InCallManager.setForceSpeakerphoneOn(true);
-                    console.log("[DayCall] Speaker mode forced on via InCallManager");
-                } catch (e: any) {
-                    console.warn("[DayCall] InCallManager speaker routing failed:", e);
-                }
+                console.log("[DayCall] LiveAudioStream started");
             };
 
             ws.onmessage = (event) => {
@@ -398,6 +423,8 @@ export default function VoiceScreen() {
         if (timerRef.current) clearInterval(timerRef.current);
 
         await stopAllPlayback();
+        try { InCallManager.stop(); } catch { }
+        await stopAec();
         LiveAudioStream.stop();
         audioSubRef.current?.remove();
         audioSubRef.current = null;
@@ -405,7 +432,6 @@ export default function VoiceScreen() {
         await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(
             () => { }
         );
-        try { InCallManager.stop(); } catch { }
         if (wsRef.current) {
             wsRef.current.close();
             wsRef.current = null;
@@ -426,11 +452,40 @@ export default function VoiceScreen() {
     useEffect(() => {
         startSession();
         return () => {
+            // Release EVERY audio resource so the next session can reacquire the mic.
             if (timerRef.current) clearInterval(timerRef.current);
+
+            // Stop playback
+            playSessionRef.current++;
+            playQueueRef.current = Promise.resolve();
+            playQueueCountRef.current = 0;
+            pcmChunksRef.current = [];
+            resolveCurrentSoundRef.current?.();
+            const sound = currentSoundRef.current;
+            currentSoundRef.current = null;
+            sound?.stopAsync().catch(() => { });
+            sound?.unloadAsync().catch(() => { });
+            isPlayingRef.current = false;
+
+            // Stop WebRTC AEC FIRST (releases getUserMedia mic stream)
+            stopAec().catch(() => { });
+
+            // Stop mic AFTER AEC released
             audioSubRef.current?.remove();
             audioSubRef.current = null;
             LiveAudioStream.stop();
-            wsRef.current?.close();
+
+            // Stop InCallManager speaker routing
+            try { InCallManager.stop(); } catch { }
+
+            // Reset audio mode
+            Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => { });
+
+            // Close WebSocket
+            if (wsRef.current) {
+                wsRef.current.close();
+                wsRef.current = null;
+            }
         };
     }, []);
 

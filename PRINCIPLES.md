@@ -1,4 +1,4 @@
-> Goal: Keep this codebase **scure, clean, readable, and maintainable**.
+> Goal: Keep this codebase **scure, clean, readable, maintainable, and suitable for multi-language support**.
 
 ## 1) Primary Priorities
 
@@ -21,6 +21,7 @@
 - Add **short comments at the top of logical blocks** (not noisy line-by-line comments)
 - Prefer **explicit code** over clever shortcuts.
 - Do not introduce multiple names for the same concept.
+- Do not hardcode user-facing UI text directly in components if it should be translatable.
 
 ## 4) Reuse & Duplication Rules
 
@@ -48,6 +49,7 @@
   - authorization
 - Keep code where it logically belongs.
 - API/network calls must be centralized under a main API/services folder (not scattered across UI files). Organize that folder clearly by domain/resource (auth, profile, payments, etc.) and keep UI/components free of direct fetch/axios calls.
+- User-facing text should go through a localization/i18n layer (keys/resources), not be scattered as hardcoded strings across UI files.
 
 ## 7) Folder Organization (general principle, not strict structure)
 
@@ -61,13 +63,14 @@ Use this decision rule:
 - **Low-level utility/lib folders** for generic helpers/adapters
 - **Config folders** only for configuration (and never secrets in client config)
 - **Assets folder** for static files/animations/images
+- **i18n/localization folder** for translation resources, locale config, and localization helpers
 
 ### Good folder grouping criteria
 
 Group code based on:
 
 - **What problem/domain it belongs to** (feature)
-- **What role it plays** (UI / business logic / API/network / validation / types)
+- **What role it plays** (UI / business logic / API/network / validation / types / localization)
 - **How reusable it is** (feature-specific vs shared)
 
 ### Avoid
@@ -86,3 +89,16 @@ Group code based on:
 - Do not hide failures with silent fallbacks unless intentional and documented.
 - Security/auth code must not “fail open.”
 - Use safe errors for users; keep sensitive diagnostics internal.
+
+## 10) Internationalization / Multi-language Rules
+
+- Assume the app supports multiple languages.
+- Keep user-facing strings translatable (use i18n keys/resources instead of hardcoded text in UI).
+- Prefer stable translation keys and consistent naming.
+- Do not build logic based on translated display text.
+- Format dates, numbers, and currencies in a locale-aware way when relevant.
+
+##11) Theme / Styling Rules (Dark-Light)
+
+- App supports **light and dark theme**, check frontend/theme directory.
+- Do not hardcode UI colors, always use colors within frontend/theme/colors.ts. If a component's color is not defined in there, add it there first and use it.

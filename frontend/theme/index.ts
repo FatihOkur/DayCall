@@ -3,7 +3,6 @@
  * Import colors from here; do not hardcode hex values in components.
  */
 
-import { useColorScheme } from "react-native";
 import {
     themeColorsLight,
     themeColorsDark,
@@ -14,10 +13,9 @@ export { themeColorsLight, themeColorsDark };
 export type { ThemeColors };
 
 /**
- * Returns the current theme colors based on system light/dark preference.
- * Use this in components so UI adapts to light and dark theme.
+ * Returns the current theme colors.
+ * TODO: Currently forced to dark mode. Swap to useColorScheme() when user toggle is added.
  */
 export function useThemeColors(): ThemeColors {
-    const colorScheme = useColorScheme();
-    return colorScheme === "dark" ? themeColorsDark : themeColorsLight;
+    return themeColorsDark;
 }

@@ -8,13 +8,17 @@
  *
  * Flow:  getUserMedia(AEC constraints) → addTrack → createOffer → loopback answer
  *        ↳ WebRTC pipeline now processes all mic audio through its AEC engine
+ *
+ * NOTE: react-native-webrtc is loaded dynamically so the app does not crash
+ * in environments where the native module is not available (e.g. Expo Go).
  */
 
-import { RTCPeerConnection, mediaDevices } from "react-native-webrtc";
+// No top-level import of react-native-webrtc — it triggers NativeEventEmitter
+// and crashes when the native module is missing. We load it inside initAec().
 
 let initialized = false;
 let localStream: any = null;
-let peerConnection: RTCPeerConnection | null = null;
+let peerConnection: any = null;
 
 /**
  * Initialize WebRTC AEC: get mic with echo-cancellation constraints
@@ -22,6 +26,18 @@ let peerConnection: RTCPeerConnection | null = null;
  */
 export async function initAec(): Promise<boolean> {
     if (initialized) return true;
+
+    let RTCPeerConnectionClass: any;
+    let mediaDevices: any;
+
+    try {
+        const webrtc = await import("react-native-webrtc");
+        RTCPeerConnectionClass = webrtc.RTCPeerConnection;
+        mediaDevices = webrtc.mediaDevices;
+    } catch (e) {
+        console.warn("[AEC] WebRTC not available (e.g. Expo Go):", e);
+        return false;
+    }
 
     try {
         console.log("[AEC] Initializing WebRTC echo cancellation...");
@@ -42,7 +58,7 @@ export async function initAec(): Promise<boolean> {
         localStream = stream;
 
         // Create loopback PeerConnection to activate AEC pipeline
-        peerConnection = new RTCPeerConnection({
+        peerConnection = new RTCPeerConnectionClass({
             // @ts-ignore
             sdpSemantics: "unified-plan",
             iceServers: [{ urls: "stun:stun.l.google.com:19302" }],

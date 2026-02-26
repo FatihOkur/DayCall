@@ -6,6 +6,9 @@
 2. **Clarity / understandability**
 3. **Maintainability / consistency**
 4. **Reuse before new code**
+5. **After each update, concise explanation on what have been done, what was the problem, and do we need new expo build?**
+6. **I am developing on windows and using EAS, I take builds on cloud and use them on my iPhone. Consider this scenario always.**
+7. **Product-level quality is key on any code and component**
 
 ## 2) Before Writing Any Code (mandatory)
 
@@ -47,6 +50,7 @@
   - data fetching
   - data transformation
   - authorization
+- NEVER USE EMOJIS
 - Keep code where it logically belongs.
 - API/network calls must be centralized under a main API/services folder (not scattered across UI files). Organize that folder clearly by domain/resource (auth, profile, payments, etc.) and keep UI/components free of direct fetch/axios calls.
 - User-facing text should go through a localization/i18n layer (keys/resources), not be scattered as hardcoded strings across UI files.

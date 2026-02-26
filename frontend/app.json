@@ -34,7 +34,15 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-asset"
+      "expo-asset",
+      "expo-notifications",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "DayCall uses your photos to attach to journal entries.",
+          "cameraPermission": "DayCall needs camera access to take photos for journal entries."
+        }
+      ]
     ],
     "extra": {
       "router": {},

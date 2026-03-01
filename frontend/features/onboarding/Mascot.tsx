@@ -1,10 +1,9 @@
 /**
- * Mascot placeholder — dummy figure for onboarding.
- * Swap for Rive when the mascot file is ready; keep the same props.
+ * Mascot — displays Fio as a gif (idle.gif).
+ * Asset: frontend/assets/gifs/idle.gif
  */
 
-import { View, Text, StyleSheet } from "react-native";
-import { useThemeColors } from "../../theme";
+import { View, Image, StyleSheet } from "react-native";
 
 export type MascotVariant = "hero" | "compact";
 
@@ -12,32 +11,24 @@ interface MascotProps {
     variant: MascotVariant;
 }
 
+const idleGif = require("../../assets/gifs/idle.gif");
+
 export function Mascot({ variant }: MascotProps) {
-    const colors = useThemeColors();
     const isHero = variant === "hero";
 
     return (
-        <View
-            style={[
-                styles.base,
-                isHero ? styles.hero : styles.compact,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}
-        >
-            <Text style={[isHero ? styles.faceHero : styles.faceCompact, { color: colors.textPrimary }]}>
-                {isHero ? "Fio" : "F"}
-            </Text>
-            {isHero && (
-                <Text style={[styles.label, { color: colors.textMuted }]}>Fio</Text>
-            )}
+        <View style={[styles.base, isHero ? styles.hero : styles.compact]}>
+            <Image
+                source={idleGif}
+                style={isHero ? styles.imageHero : styles.imageCompact}
+                resizeMode="contain"
+            />
         </View>
     );
 }
 
 const styles = StyleSheet.create({
     base: {
-        borderRadius: 9999,
-        borderWidth: 2,
         justifyContent: "center",
         alignItems: "center",
     },
@@ -49,16 +40,12 @@ const styles = StyleSheet.create({
         width: 48,
         height: 48,
     },
-    faceHero: {
-        fontSize: 56,
+    imageHero: {
+        width: 120,
+        height: 120,
     },
-    faceCompact: {
-        fontSize: 28,
-    },
-    label: {
-        position: "absolute",
-        bottom: -20,
-        fontSize: 12,
-        fontWeight: "600",
+    imageCompact: {
+        width: 48,
+        height: 48,
     },
 });

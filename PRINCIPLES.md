@@ -2,13 +2,14 @@
 
 ## 1) Primary Priorities
 
-1. **Security first** (no leaks, no weak auth assumptions)
-2. **Clarity / understandability**
-3. **Maintainability / consistency**
-4. **Reuse before new code**
-5. **After each update, concise explanation on what have been done, what was the problem, and do we need new expo build?**
-6. **I am developing on windows and using EAS, I take builds on cloud and use them on my iPhone. Consider this scenario always.**
-7. **Product-level quality is key on any code and component**
+1. **Before any new EAS build:** When adding or changing native dependencies (e.g. date picker, notifications, native modules), update `frontend/app.json` plugins (and any required config) first; then take the build. Never take a new build without this, or you risk "Unimplemented component" and wasted builds.
+2. **Security first** (no leaks, no weak auth assumptions)
+3. **Clarity / understandability**
+4. **Maintainability / consistency**
+5. **Reuse before new code**
+6. **After each update, concise explanation on what have been done, what was the problem, and do we need new expo build?**
+7. **I am developing on windows and using EAS, I take builds on cloud and use them on my iPhone. Consider this scenario always.**
+8. **Product-level quality is key on any code and component**
 
 ## 2) Before Writing Any Code (mandatory)
 

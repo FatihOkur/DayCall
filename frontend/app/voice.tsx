@@ -17,25 +17,20 @@ import InCallManager from "react-native-incall-manager";
 import { initAec, stopAec } from "../services/WebRTCAecService";
 import { useAppStore } from "../store/useAppStore";
 import { API_BASE_URL } from "../services/api";
+import { useTheme } from "../theme";
+import { ScreenBackground } from "../components/ScreenBackground";
 
 /**
- * Voice Session — Full-duplex real-time AI conversation.
+ * Voice Session -- Full-duplex real-time AI conversation.
  *
  * Audio architecture:
- *   Recording:  LiveAudioStream → 16kHz PCM → WebSocket → Backend → Gemini
- *   Playback:   Gemini PCM → Backend → WebSocket → WAV data URI → expo-av
- *   Transcript:  Gemini transcription → Backend JSON → chat bubbles
- *
- * Features:
- *   - Full-duplex: mic runs continuously, barge-in via server-side VAD
- *   - Mute: stops sending audio (mic stays on, connection stays open)
- *   - Transcript popup: real-time conversation bubbles
- *   - Speaker routing: forces iOS to main loudspeaker via native module
+ *   Recording:  LiveAudioStream -> 16kHz PCM -> WebSocket -> Backend -> Gemini
+ *   Playback:   Gemini PCM -> Backend -> WebSocket -> WAV data URI -> expo-av
+ *   Transcript:  Gemini transcription -> Backend JSON -> chat bubbles
  */
 
 const WS_BASE_URL = API_BASE_URL.replace(/^http/, "ws");
 
-// ─── PCM → WAV helper ──────────────────────────────────────────────────────
 function pcmToDataUri(pcm: ArrayBuffer, sampleRate = 24000): string {
     const numChannels = 1;
     const bitsPerSample = 16;
@@ -43,7 +38,6 @@ function pcmToDataUri(pcm: ArrayBuffer, sampleRate = 24000): string {
     const blockAlign = (numChannels * bitsPerSample) / 8;
     const dataSize = pcm.byteLength;
 
-    // Amplify PCM samples (iOS playAndRecord mode has lower gain)
     const GAIN = 2.0;
     const src = new Int16Array(pcm);
     const boosted = new Int16Array(src.length);
@@ -55,18 +49,18 @@ function pcmToDataUri(pcm: ArrayBuffer, sampleRate = 24000): string {
 
     const wav = new ArrayBuffer(44 + dataSize);
     const v = new DataView(wav);
-    v.setUint32(0, 0x52494646, false);  // "RIFF"
+    v.setUint32(0, 0x52494646, false);
     v.setUint32(4, 36 + dataSize, true);
-    v.setUint32(8, 0x57415645, false);  // "WAVE"
-    v.setUint32(12, 0x666d7420, false); // "fmt "
+    v.setUint32(8, 0x57415645, false);
+    v.setUint32(12, 0x666d7420, false);
     v.setUint32(16, 16, true);
-    v.setUint16(20, 1, true);           // PCM
+    v.setUint16(20, 1, true);
     v.setUint16(22, numChannels, true);
     v.setUint32(24, sampleRate, true);
     v.setUint32(28, byteRate, true);
     v.setUint16(32, blockAlign, true);
     v.setUint16(34, bitsPerSample, true);
-    v.setUint32(36, 0x64617461, false); // "data"
+    v.setUint32(36, 0x64617461, false);
     v.setUint32(40, dataSize, true);
     new Uint8Array(wav, 44).set(boostedBytes);
 
@@ -81,17 +75,16 @@ function pcmToDataUri(pcm: ArrayBuffer, sampleRate = 24000): string {
     return `data:audio/wav;base64,${btoa(bin)}`;
 }
 
-// ─── Constants ──────────────────────────────────────────────────────────────
 const PCM_OPTIONS = {
     sampleRate: 16000,
     channels: 1,
     bitsPerSample: 16,
-    audioSource: 6, // VOICE_RECOGNITION — HW AEC on Android
+    audioSource: 6,
     bufferSize: 4096,
     wavFile: "",
 };
 
-const EARLY_PLAY_BYTES = 48000; // ~1s at 24kHz/16-bit — matches Gemini chunk size
+const EARLY_PLAY_BYTES = 48000;
 
 type SessionState = "connecting" | "active" | "ended" | "error";
 
@@ -101,8 +94,8 @@ interface TranscriptMsg {
     id: number;
 }
 
-// ─── Component ──────────────────────────────────────────────────────────────
 export default function VoiceScreen() {
+    const { theme } = useTheme();
     const token = useAppStore((s) => s.token);
     const setVoiceStatus = useAppStore((s) => s.setVoiceStatus);
 
@@ -120,7 +113,6 @@ export default function VoiceScreen() {
     const transcriptIdRef = useRef(0);
     const scrollViewRef = useRef<ScrollView>(null);
 
-    // Playback refs
     const pcmChunksRef = useRef<ArrayBuffer[]>([]);
     const playQueueRef = useRef<Promise<void>>(Promise.resolve());
     const playQueueCountRef = useRef(0);
@@ -132,7 +124,6 @@ export default function VoiceScreen() {
 
     const pulseAnim = useRef(new Animated.Value(1)).current;
 
-    // ─── Pulse animation ────────────────────────────────────────────────
     useEffect(() => {
         if (sessionState === "active") {
             const pulse = Animated.loop(
@@ -154,7 +145,6 @@ export default function VoiceScreen() {
         }
     }, [sessionState]);
 
-    // ─── Duration timer ─────────────────────────────────────────────────
     useEffect(() => {
         if (sessionState === "active") {
             timerRef.current = setInterval(
@@ -173,11 +163,9 @@ export default function VoiceScreen() {
         return `${m}:${s.toString().padStart(2, "0")}`;
     };
 
-    // ─── Transcript helper ──────────────────────────────────────────────
     const addTranscript = useCallback(
         (role: "user" | "model", text: string) => {
             setTranscript((prev) => {
-                // Append to last message of same role, or create new
                 const last = prev[prev.length - 1];
                 if (last && last.role === role) {
                     return [
@@ -190,7 +178,6 @@ export default function VoiceScreen() {
                     { role, text, id: transcriptIdRef.current++ },
                 ];
             });
-            // Auto-scroll
             setTimeout(
                 () => scrollViewRef.current?.scrollToEnd({ animated: true }),
                 100
@@ -199,7 +186,6 @@ export default function VoiceScreen() {
         []
     );
 
-    // ─── Flush and play ─────────────────────────────────────────────────
     const flushAndPlay = useCallback((chunks: ArrayBuffer[]) => {
         if (chunks.length === 0) return;
         const totalBytes = chunks.reduce((s, c) => s + c.byteLength, 0);
@@ -260,7 +246,6 @@ export default function VoiceScreen() {
             });
     }, []);
 
-    // ─── Stop all playback (interrupt / end session) ────────────────────
     const stopAllPlayback = useCallback(async () => {
         playSessionRef.current++;
         playQueueRef.current = Promise.resolve();
@@ -281,7 +266,6 @@ export default function VoiceScreen() {
         setIsAiSpeaking(false);
     }, []);
 
-    // ─── Start session ──────────────────────────────────────────────────
     const startSession = useCallback(async () => {
         try {
             setVoiceStatus("connecting");
@@ -308,28 +292,19 @@ export default function VoiceScreen() {
                 setSessionState("active");
                 setVoiceStatus("active");
 
-                // 1. Speaker routing first
                 try {
-                    InCallManager.start({
-                        media: "audio",
-                        auto: true,
-                    });
+                    InCallManager.start({ media: "audio", auto: true });
                     InCallManager.setForceSpeakerphoneOn(true);
-                    console.log("[DayCall] Speaker enabled via InCallManager");
                 } catch (e: any) {
                     console.warn("[DayCall] InCallManager failed:", e);
                 }
 
-                // 2. WebRTC AEC — must init BEFORE LiveAudioStream
-                //    getUserMedia grabs the mic with AEC constraints,
-                //    then LiveAudioStream captures AEC-processed audio.
                 try {
                     await initAec();
                 } catch (e: any) {
                     console.warn("[DayCall] WebRTC AEC init failed:", e);
                 }
 
-                // 3. Start mic capture (safety stop first for re-init)
                 try { LiveAudioStream.stop(); } catch { }
                 LiveAudioStream.init(PCM_OPTIONS);
 
@@ -337,7 +312,7 @@ export default function VoiceScreen() {
                     "data",
                     (data: string) => {
                         if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-                        if (isMutedRef.current) return; // Muted — don't send
+                        if (isMutedRef.current) return;
                         try {
                             const binaryStr = atob(data);
                             const buf = new ArrayBuffer(binaryStr.length);
@@ -353,11 +328,9 @@ export default function VoiceScreen() {
                 ) as unknown as { remove: () => void };
 
                 LiveAudioStream.start();
-                console.log("[DayCall] LiveAudioStream started");
             };
 
             ws.onmessage = (event) => {
-                // Control / transcript message
                 if (typeof event.data === "string") {
                     try {
                         const msg = JSON.parse(event.data);
@@ -373,19 +346,15 @@ export default function VoiceScreen() {
                         } else if (msg.type === "transcript") {
                             addTranscript(msg.role, msg.text);
                         }
-                    } catch {
-                        /* ignore malformed JSON */
-                    }
+                    } catch { }
                     return;
                 }
 
-                // Binary: PCM audio from Gemini
                 if (
                     event.data instanceof ArrayBuffer &&
                     event.data.byteLength > 0
                 ) {
                     pcmChunksRef.current.push(event.data);
-
                     const accumulated = pcmChunksRef.current.reduce(
                         (s, c) => s + c.byteLength,
                         0
@@ -399,7 +368,7 @@ export default function VoiceScreen() {
             };
 
             ws.onerror = () => {
-                setErrorMsg("Connection error — is the backend running?");
+                setErrorMsg("Connection error -- is the backend running?");
                 setSessionState("error");
                 setVoiceStatus("idle");
             };
@@ -416,7 +385,6 @@ export default function VoiceScreen() {
         }
     }, [token, flushAndPlay, stopAllPlayback, addTranscript]);
 
-    // ─── End session ────────────────────────────────────────────────────
     const endSession = useCallback(async () => {
         setSessionState("ended");
         setVoiceStatus("idle");
@@ -429,9 +397,7 @@ export default function VoiceScreen() {
         audioSubRef.current?.remove();
         audioSubRef.current = null;
 
-        await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(
-            () => { }
-        );
+        await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => { });
         if (wsRef.current) {
             wsRef.current.close();
             wsRef.current = null;
@@ -439,7 +405,6 @@ export default function VoiceScreen() {
         setTimeout(() => router.back(), 400);
     }, [stopAllPlayback]);
 
-    // ─── Toggle mute ────────────────────────────────────────────────────
     const toggleMute = useCallback(() => {
         setIsMuted((prev) => {
             const next = !prev;
@@ -448,14 +413,10 @@ export default function VoiceScreen() {
         });
     }, []);
 
-    // ─── Mount ──────────────────────────────────────────────────────────
     useEffect(() => {
         startSession();
         return () => {
-            // Release EVERY audio resource so the next session can reacquire the mic.
             if (timerRef.current) clearInterval(timerRef.current);
-
-            // Stop playback
             playSessionRef.current++;
             playQueueRef.current = Promise.resolve();
             playQueueCountRef.current = 0;
@@ -467,21 +428,13 @@ export default function VoiceScreen() {
             sound?.unloadAsync().catch(() => { });
             isPlayingRef.current = false;
 
-            // Stop WebRTC AEC FIRST (releases getUserMedia mic stream)
             stopAec().catch(() => { });
-
-            // Stop mic AFTER AEC released
             audioSubRef.current?.remove();
             audioSubRef.current = null;
             LiveAudioStream.stop();
-
-            // Stop InCallManager speaker routing
             try { InCallManager.stop(); } catch { }
-
-            // Reset audio mode
             Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => { });
 
-            // Close WebSocket
             if (wsRef.current) {
                 wsRef.current.close();
                 wsRef.current = null;
@@ -489,7 +442,6 @@ export default function VoiceScreen() {
         };
     }, []);
 
-    // ─── Helpers ────────────────────────────────────────────────────────
     const statusLabel = () => {
         if (sessionState === "connecting") return "Connecting...";
         if (sessionState === "error") return "Error";
@@ -500,212 +452,225 @@ export default function VoiceScreen() {
 
     const orbColor =
         sessionState === "error"
-            ? "#DC2626"
+            ? theme.error
             : isMuted
-                ? "#6B7280"
+                ? theme.textMuted
                 : isAiSpeaking
-                    ? "#7B9EA6"
+                    ? theme.voiceRingCore
                     : sessionState === "active"
-                        ? "#DA7756"
-                        : "#A69B8D";
+                        ? theme.accent
+                        : theme.textSecondary;
 
-    // ─── Render ─────────────────────────────────────────────────────────
     return (
-        <SafeAreaView style={S.container}>
-            {/* Main content */}
-            <View style={S.content}>
-                {/* Status */}
-                <Text style={S.statusLabel}>{statusLabel()}</Text>
-
-                {/* Glowing orb */}
-                <Animated.View
-                    style={[
-                        S.orb,
-                        {
-                            backgroundColor: orbColor,
-                            transform: [
-                                {
-                                    scale:
-                                        sessionState === "active"
-                                            ? pulseAnim
-                                            : 1,
-                                },
-                            ],
-                            shadowColor: orbColor,
-                            shadowOpacity: sessionState === "active" ? 0.6 : 0,
-                        },
-                    ]}
-                >
-                    <Text style={S.orbIcon}>
-                        {sessionState === "error"
-                            ? "⚠️"
-                            : isMuted
-                                ? "🔇"
-                                : isAiSpeaking
-                                    ? "🔊"
-                                    : "🎙️"}
+        <ScreenBackground>
+            <SafeAreaView style={styles.container}>
+                <View style={styles.content}>
+                    <Text style={[styles.statusLabel, { color: theme.textSecondary }]}>
+                        {statusLabel()}
                     </Text>
-                </Animated.View>
 
-                {/* Duration */}
-                {sessionState === "active" && (
-                    <Text style={S.duration}>{formatDuration(duration)}</Text>
-                )}
-
-                {/* Error */}
-                {errorMsg ? <Text style={S.errorText}>{errorMsg}</Text> : null}
-
-                {/* Subtitle */}
-                {sessionState === "active" && (
-                    <Text style={S.subtitle}>
-                        {isMuted
-                            ? "Microphone is muted"
-                            : isAiSpeaking
-                                ? "The AI is responding..."
-                                : "Speak naturally. The AI is listening."}
-                    </Text>
-                )}
-            </View>
-
-            {/* Control buttons row */}
-            {sessionState === "active" && (
-                <View style={S.controlRow}>
-                    {/* Mute */}
-                    <Pressable
-                        onPress={toggleMute}
-                        style={({ pressed }) => [
-                            S.controlBtn,
-                            isMuted && S.controlBtnActive,
-                            pressed && { opacity: 0.7 },
+                    <Animated.View
+                        style={[
+                            styles.orb,
+                            {
+                                backgroundColor: orbColor,
+                                transform: [
+                                    {
+                                        scale: sessionState === "active" ? pulseAnim : 1,
+                                    },
+                                ],
+                                shadowColor: orbColor,
+                                shadowOpacity: sessionState === "active" ? 0.6 : 0,
+                            },
                         ]}
                     >
-                        <Text style={S.controlIcon}>
-                            {isMuted ? "🔇" : "🎤"}
+                        <Text style={styles.orbIcon}>
+                            {sessionState === "error"
+                                ? "⚠️"
+                                : isMuted
+                                    ? "🔇"
+                                    : isAiSpeaking
+                                        ? "🔊"
+                                        : "🎙️"}
                         </Text>
-                        <Text
-                            style={[
-                                S.controlLabel,
-                                isMuted && { color: "#DA7756" },
+                    </Animated.View>
+
+                    {sessionState === "active" && (
+                        <Text style={[styles.duration, { color: theme.textPrimary }]}>
+                            {formatDuration(duration)}
+                        </Text>
+                    )}
+
+                    {errorMsg ? (
+                        <Text style={[styles.errorText, { color: theme.error }]}>
+                            {errorMsg}
+                        </Text>
+                    ) : null}
+
+                    {sessionState === "active" && (
+                        <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
+                            {isMuted
+                                ? "Microphone is muted"
+                                : isAiSpeaking
+                                    ? "The AI is responding..."
+                                    : "Speak naturally. The AI is listening."}
+                        </Text>
+                    )}
+                </View>
+
+                {sessionState === "active" && (
+                    <View style={styles.controlRow}>
+                        <Pressable
+                            onPress={toggleMute}
+                            style={({ pressed }) => [
+                                styles.controlBtn,
+                                {
+                                    backgroundColor: isMuted ? theme.bgRaised : theme.bgSurface,
+                                    borderColor: isMuted ? theme.accent : theme.borderMedium,
+                                },
+                                pressed && { opacity: 0.7 },
                             ]}
                         >
-                            {isMuted ? "Unmute" : "Mute"}
-                        </Text>
-                    </Pressable>
+                            <Text style={styles.controlIcon}>
+                                {isMuted ? "🔇" : "🎤"}
+                            </Text>
+                            <Text
+                                style={[
+                                    styles.controlLabel,
+                                    { color: isMuted ? theme.accent : theme.textSecondary },
+                                ]}
+                            >
+                                {isMuted ? "Unmute" : "Mute"}
+                            </Text>
+                        </Pressable>
 
-                    {/* Transcript */}
+                        <Pressable
+                            onPress={() => setShowTranscript(true)}
+                            style={({ pressed }) => [
+                                styles.controlBtn,
+                                {
+                                    backgroundColor: theme.bgSurface,
+                                    borderColor: theme.borderMedium,
+                                },
+                                pressed && { opacity: 0.7 },
+                            ]}
+                        >
+                            <Text style={styles.controlIcon}>💬</Text>
+                            <Text style={[styles.controlLabel, { color: theme.textSecondary }]}>
+                                Transcript
+                            </Text>
+                        </Pressable>
+                    </View>
+                )}
+
+                <View style={styles.bottomBar}>
                     <Pressable
-                        onPress={() => setShowTranscript(true)}
+                        onPress={
+                            sessionState === "error" ? () => router.back() : endSession
+                        }
                         style={({ pressed }) => [
-                            S.controlBtn,
-                            pressed && { opacity: 0.7 },
+                            styles.endBtn,
+                            {
+                                backgroundColor: pressed ? theme.bgRaised : theme.bgSurface,
+                                borderColor: theme.borderMedium,
+                            },
                         ]}
                     >
-                        <Text style={S.controlIcon}>💬</Text>
-                        <Text style={S.controlLabel}>Transcript</Text>
+                        <Text
+                            style={{
+                                color: sessionState === "error" ? theme.textSecondary : theme.error,
+                                fontSize: 16,
+                                fontWeight: "600",
+                            }}
+                        >
+                            {sessionState === "error" ? "Go Back" : "End Session"}
+                        </Text>
                     </Pressable>
                 </View>
-            )}
 
-            {/* End / Go Back button */}
-            <View
-                style={{
-                    paddingHorizontal: 32,
-                    paddingBottom: Platform.OS === "ios" ? 16 : 32,
-                }}
-            >
-                <Pressable
-                    onPress={
-                        sessionState === "error" ? () => router.back() : endSession
-                    }
-                    style={({ pressed }) => ({
-                        backgroundColor: pressed ? "#3D3631" : "#2D2926",
-                        borderRadius: 16,
-                        padding: 18,
-                        alignItems: "center",
-                        borderWidth: 1,
-                        borderColor: "#4A4340",
-                    })}
+                {/* Transcript Modal */}
+                <Modal
+                    visible={showTranscript}
+                    animationType="slide"
+                    transparent={true}
+                    onRequestClose={() => setShowTranscript(false)}
                 >
-                    <Text
-                        style={{
-                            color:
-                                sessionState === "error" ? "#A69B8D" : "#DC2626",
-                            fontSize: 16,
-                            fontWeight: "600",
-                        }}
-                    >
-                        {sessionState === "error" ? "Go Back" : "End Session"}
-                    </Text>
-                </Pressable>
-            </View>
-
-            {/* ─── Transcript Modal ──────────────────────────────────────── */}
-            <Modal
-                visible={showTranscript}
-                animationType="slide"
-                transparent={true}
-                onRequestClose={() => setShowTranscript(false)}
-            >
-                <View style={S.modalOverlay}>
-                    <View style={S.modalContent}>
-                        {/* Header */}
-                        <View style={S.modalHeader}>
-                            <Text style={S.modalTitle}>Transcript</Text>
-                            <Pressable
-                                onPress={() => setShowTranscript(false)}
-                                hitSlop={12}
-                            >
-                                <Text style={S.modalClose}>✕</Text>
-                            </Pressable>
-                        </View>
-
-                        {/* Messages */}
-                        <ScrollView
-                            ref={scrollViewRef}
-                            style={S.modalScroll}
-                            contentContainerStyle={{ paddingBottom: 16 }}
+                    <View style={styles.modalOverlay}>
+                        <View
+                            style={[
+                                styles.modalContent,
+                                {
+                                    backgroundColor: theme.bgBase,
+                                    borderColor: theme.borderSubtle,
+                                },
+                            ]}
                         >
-                            {transcript.length === 0 ? (
-                                <Text style={S.emptyTranscript}>
-                                    Transcript will appear here as you speak...
+                            <View
+                                style={[
+                                    styles.modalHeader,
+                                    { borderBottomColor: theme.borderSubtle },
+                                ]}
+                            >
+                                <Text style={[styles.modalTitle, { color: theme.textPrimary }]}>
+                                    Transcript
                                 </Text>
-                            ) : (
-                                transcript.map((msg) => (
-                                    <View
-                                        key={msg.id}
-                                        style={[
-                                            S.bubble,
-                                            msg.role === "user"
-                                                ? S.bubbleUser
-                                                : S.bubbleModel,
-                                        ]}
-                                    >
-                                        <Text
+                                <Pressable
+                                    onPress={() => setShowTranscript(false)}
+                                    hitSlop={12}
+                                >
+                                    <Text style={[styles.modalClose, { color: theme.textSecondary }]}>
+                                        ✕
+                                    </Text>
+                                </Pressable>
+                            </View>
+
+                            <ScrollView
+                                ref={scrollViewRef}
+                                style={styles.modalScroll}
+                                contentContainerStyle={{ paddingBottom: 16 }}
+                            >
+                                {transcript.length === 0 ? (
+                                    <Text style={[styles.emptyTranscript, { color: theme.textMuted }]}>
+                                        Transcript will appear here as you speak...
+                                    </Text>
+                                ) : (
+                                    transcript.map((msg) => (
+                                        <View
+                                            key={msg.id}
                                             style={[
-                                                S.bubbleText,
+                                                styles.bubble,
                                                 msg.role === "user"
-                                                    ? S.bubbleTextUser
-                                                    : S.bubbleTextModel,
+                                                    ? [styles.bubbleUser, { backgroundColor: theme.success }]
+                                                    : [styles.bubbleModel, { backgroundColor: theme.bgSurface }],
                                             ]}
                                         >
-                                            {msg.text}
-                                        </Text>
-                                    </View>
-                                ))
-                            )}
-                        </ScrollView>
+                                            <Text
+                                                style={[
+                                                    styles.bubbleText,
+                                                    {
+                                                        color: msg.role === "user"
+                                                            ? theme.buttonPrimaryText
+                                                            : theme.textPrimary,
+                                                    },
+                                                ]}
+                                            >
+                                                {msg.text}
+                                            </Text>
+                                        </View>
+                                    ))
+                                )}
+                            </ScrollView>
+                        </View>
                     </View>
-                </View>
-            </Modal>
-        </SafeAreaView>
+                </Modal>
+            </SafeAreaView>
+        </ScreenBackground>
     );
 }
 
-// ─── Styles ─────────────────────────────────────────────────────────────────
-const S = StyleSheet.create({
+const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: "#1A1714",
     },
     content: {
         flex: 1,
@@ -715,7 +680,6 @@ const S = StyleSheet.create({
     },
     statusLabel: {
         fontSize: 13,
-        color: "#A69B8D",
         textTransform: "uppercase",
         letterSpacing: 3,
         marginBottom: 32,
@@ -736,26 +700,21 @@ const S = StyleSheet.create({
     },
     duration: {
         fontSize: 36,
-        fontFamily: "Georgia",
-        color: "#F5F2EB",
         marginTop: 32,
         fontWeight: "300",
     },
     errorText: {
         fontSize: 15,
-        color: "#DC2626",
         textAlign: "center",
         marginTop: 24,
         paddingHorizontal: 20,
     },
     subtitle: {
         fontSize: 15,
-        color: "#A69B8D",
         textAlign: "center",
         marginTop: 16,
         lineHeight: 22,
     },
-    // ── Control buttons ─────────────────────────────────────────────────
     controlRow: {
         flexDirection: "row",
         justifyContent: "center",
@@ -769,13 +728,7 @@ const S = StyleSheet.create({
         width: 80,
         height: 80,
         borderRadius: 20,
-        backgroundColor: "#2D2926",
         borderWidth: 1,
-        borderColor: "#4A4340",
-    },
-    controlBtnActive: {
-        backgroundColor: "#3D2A22",
-        borderColor: "#DA7756",
     },
     controlIcon: {
         fontSize: 28,
@@ -783,25 +736,31 @@ const S = StyleSheet.create({
     },
     controlLabel: {
         fontSize: 11,
-        color: "#A69B8D",
         fontWeight: "600",
         textTransform: "uppercase",
         letterSpacing: 0.5,
     },
-    // ── Transcript modal ────────────────────────────────────────────────
+    bottomBar: {
+        paddingHorizontal: 32,
+        paddingBottom: Platform.OS === "ios" ? 16 : 32,
+    },
+    endBtn: {
+        borderRadius: 16,
+        padding: 18,
+        alignItems: "center",
+        borderWidth: 1,
+    },
     modalOverlay: {
         flex: 1,
         backgroundColor: "rgba(0,0,0,0.6)",
         justifyContent: "flex-end",
     },
     modalContent: {
-        backgroundColor: "#1A1714",
         borderTopLeftRadius: 24,
         borderTopRightRadius: 24,
         maxHeight: "75%",
         minHeight: "50%",
         borderWidth: 1,
-        borderColor: "#2D2926",
     },
     modalHeader: {
         flexDirection: "row",
@@ -810,17 +769,13 @@ const S = StyleSheet.create({
         paddingHorizontal: 24,
         paddingVertical: 16,
         borderBottomWidth: 1,
-        borderBottomColor: "#2D2926",
     },
     modalTitle: {
         fontSize: 18,
         fontWeight: "700",
-        color: "#F5F2EB",
-        fontFamily: "Georgia",
     },
     modalClose: {
         fontSize: 20,
-        color: "#A69B8D",
         fontWeight: "700",
     },
     modalScroll: {
@@ -828,13 +783,11 @@ const S = StyleSheet.create({
         paddingTop: 12,
     },
     emptyTranscript: {
-        color: "#6B6560",
         fontSize: 14,
         textAlign: "center",
         marginTop: 40,
         fontStyle: "italic",
     },
-    // ── Chat bubbles ────────────────────────────────────────────────────
     bubble: {
         maxWidth: "80%",
         paddingHorizontal: 16,
@@ -844,22 +797,14 @@ const S = StyleSheet.create({
     },
     bubbleUser: {
         alignSelf: "flex-end",
-        backgroundColor: "#2D6A4F",
         borderBottomRightRadius: 6,
     },
     bubbleModel: {
         alignSelf: "flex-start",
-        backgroundColor: "#2D2926",
         borderBottomLeftRadius: 6,
     },
     bubbleText: {
         fontSize: 15,
         lineHeight: 21,
-    },
-    bubbleTextUser: {
-        color: "#D8F3DC",
-    },
-    bubbleTextModel: {
-        color: "#E5DFD5",
     },
 });

@@ -20,7 +20,7 @@ import DateTimePicker, {
 import { QAStepLayout } from "./QAStepLayout";
 import { onboardingCopy } from "../copy";
 import { useOnboardingStore } from "../onboardingStore";
-import { useThemeColors } from "../../../theme";
+import { useTheme } from "../../../theme";
 
 function formatTimeWindow(hour: number): string {
     const start = String(hour).padStart(2, "0");
@@ -29,7 +29,7 @@ function formatTimeWindow(hour: number): string {
 }
 
 export function CallTimeStep() {
-    const colors = useThemeColors();
+    const { theme, isDark } = useTheme();
     const callTimeHour = useOnboardingStore((s) => s.answers.callTimeHour);
     const setAnswer = useOnboardingStore((s) => s.setAnswer);
     const [modalVisible, setModalVisible] = useState(false);
@@ -85,7 +85,7 @@ export function CallTimeStep() {
 
     return (
         <QAStepLayout question={onboardingCopy.callTimeQuestion}>
-            <Text style={[styles.subtitle, { color: colors.textMuted }]}>
+            <Text style={[styles.subtitle, { color: theme.textMuted }]}>
                 {onboardingCopy.callTimeSubtitle}
             </Text>
 
@@ -95,8 +95,8 @@ export function CallTimeStep() {
                 style={[
                     styles.trigger,
                     {
-                        backgroundColor: colors.inputBg,
-                        borderColor: colors.border,
+                        backgroundColor: theme.inputBg,
+                        borderColor: theme.borderMedium,
                     },
                 ]}
             >
@@ -105,8 +105,8 @@ export function CallTimeStep() {
                         styles.triggerText,
                         {
                             color: callTimeHour != null
-                                ? colors.textPrimary
-                                : colors.textMuted,
+                                ? theme.textPrimary
+                                : theme.textMuted,
                         },
                     ]}
                 >
@@ -125,7 +125,7 @@ export function CallTimeStep() {
                         <View
                             style={[
                                 styles.modalContent,
-                                { backgroundColor: colors.surface },
+                                { backgroundColor: theme.bgSurface },
                             ]}
                         >
                             <View style={styles.modalHeader}>
@@ -133,7 +133,7 @@ export function CallTimeStep() {
                                     <Text
                                         style={[
                                             styles.modalHeaderBtn,
-                                            { color: colors.textMuted },
+                                            { color: theme.textMuted },
                                         ]}
                                     >
                                         Cancel
@@ -143,7 +143,7 @@ export function CallTimeStep() {
                                     <Text
                                         style={[
                                             styles.modalHeaderBtn,
-                                            { color: colors.accentPrimary },
+                                            { color: theme.accent },
                                         ]}
                                     >
                                         Done
@@ -156,7 +156,7 @@ export function CallTimeStep() {
                                 display="spinner"
                                 is24Hour
                                 onChange={onIOSChange}
-                                themeVariant="dark"
+                                themeVariant={isDark ? "dark" : "light"}
                                 style={styles.picker}
                             />
                         </View>

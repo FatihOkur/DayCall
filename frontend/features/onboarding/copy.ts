@@ -42,6 +42,11 @@ export const onboardingCopy = {
     journalingSometimes: "Sometimes",
     journalingRegularly: "Regularly",
     journalingDaily: "Daily",
+    journalingEncouragementNever: "Don't worry — you'll gain the most important habit.",
+    journalingEncouragementFewTimes: "A great time to make it a lasting part of your day.",
+    journalingEncouragementSometimes: "You'll find a whole new rhythm with daily calls.",
+    journalingEncouragementRegularly: "Daily voice journaling will deepen your practice.",
+    journalingEncouragementDaily: "You'll discover a whole new approach to journaling.",
 
     // Screen 9 — Emotional traits (multiselect)
     emotionalTraitsQuestion: "Select all that apply to you",

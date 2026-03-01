@@ -1,33 +1,34 @@
 import { Tabs } from "expo-router";
 import { Text } from "react-native";
+import { useTheme } from "../../theme";
 
 /**
- * Tab navigation layout — Journal and Settings tabs.
- * Uses Claude Palette colors for the tab bar.
+ * Tab navigation layout -- themed tab bar.
  */
 export default function TabLayout() {
+    const { theme } = useTheme();
+
     return (
         <Tabs
             screenOptions={{
                 headerStyle: {
-                    backgroundColor: "#F5F2EB",
+                    backgroundColor: theme.bgSurface,
                 },
-                headerTintColor: "#2D2926",
+                headerTintColor: theme.textPrimary,
                 headerTitleStyle: {
-                    fontFamily: "Georgia",
                     fontWeight: "600",
                     fontSize: 18,
                 },
                 headerShadowVisible: false,
                 tabBarStyle: {
-                    backgroundColor: "#FFFFFF",
-                    borderTopColor: "#E5DFD5",
+                    backgroundColor: theme.bgBase,
+                    borderTopColor: theme.borderSubtle,
                     borderTopWidth: 1,
                     paddingTop: 4,
                     height: 85,
                 },
-                tabBarActiveTintColor: "#DA7756",
-                tabBarInactiveTintColor: "#A69B8D",
+                tabBarActiveTintColor: theme.accent,
+                tabBarInactiveTintColor: theme.textMuted,
                 tabBarLabelStyle: {
                     fontSize: 12,
                     fontWeight: "500",
@@ -38,7 +39,7 @@ export default function TabLayout() {
                 name="index"
                 options={{
                     title: "Journal",
-                    tabBarIcon: ({ color }) => (
+                    tabBarIcon: () => (
                         <Text style={{ fontSize: 22 }}>📔</Text>
                     ),
                 }}
@@ -47,7 +48,7 @@ export default function TabLayout() {
                 name="settings"
                 options={{
                     title: "Settings",
-                    tabBarIcon: ({ color }) => (
+                    tabBarIcon: () => (
                         <Text style={{ fontSize: 22 }}>⚙️</Text>
                     ),
                 }}

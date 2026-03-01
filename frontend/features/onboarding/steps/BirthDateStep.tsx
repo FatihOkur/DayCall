@@ -20,7 +20,7 @@ import DateTimePicker, {
 import { QAStepLayout } from "./QAStepLayout";
 import { onboardingCopy } from "../copy";
 import { useOnboardingStore } from "../onboardingStore";
-import { useThemeColors } from "../../../theme";
+import { useTheme } from "../../../theme";
 
 function toISODate(d: Date): string {
     return d.toISOString().slice(0, 10);
@@ -36,7 +36,7 @@ function formatDisplayDate(isoDate: string): string {
 }
 
 export function BirthDateStep() {
-    const colors = useThemeColors();
+    const { theme, isDark } = useTheme();
     const birthDate = useOnboardingStore((s) => s.answers.birthDate);
     const setAnswer = useOnboardingStore((s) => s.setAnswer);
     const [modalVisible, setModalVisible] = useState(false);
@@ -90,8 +90,8 @@ export function BirthDateStep() {
                 style={[
                     styles.trigger,
                     {
-                        backgroundColor: colors.inputBg,
-                        borderColor: colors.border,
+                        backgroundColor: theme.inputBg,
+                        borderColor: theme.borderMedium,
                     },
                 ]}
             >
@@ -100,8 +100,8 @@ export function BirthDateStep() {
                         styles.triggerValue,
                         {
                             color: birthDate
-                                ? colors.textPrimary
-                                : colors.textMuted,
+                                ? theme.textPrimary
+                                : theme.textMuted,
                         },
                     ]}
                 >
@@ -122,7 +122,7 @@ export function BirthDateStep() {
                         <View
                             style={[
                                 styles.modalContent,
-                                { backgroundColor: colors.surface },
+                                { backgroundColor: theme.bgSurface },
                             ]}
                         >
                             <View style={styles.modalHeader}>
@@ -130,7 +130,7 @@ export function BirthDateStep() {
                                     <Text
                                         style={[
                                             styles.modalHeaderBtn,
-                                            { color: colors.textMuted },
+                                            { color: theme.textMuted },
                                         ]}
                                     >
                                         Cancel
@@ -140,7 +140,7 @@ export function BirthDateStep() {
                                     <Text
                                         style={[
                                             styles.modalHeaderBtn,
-                                            { color: colors.accentPrimary },
+                                            { color: theme.accent },
                                         ]}
                                     >
                                         Done
@@ -153,7 +153,7 @@ export function BirthDateStep() {
                                 display="spinner"
                                 maximumDate={new Date()}
                                 onChange={onIOSChange}
-                                themeVariant="dark"
+                                themeVariant={isDark ? "dark" : "light"}
                                 style={styles.picker}
                             />
                         </View>

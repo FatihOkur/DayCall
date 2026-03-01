@@ -2,10 +2,10 @@ import { View, TextInput, StyleSheet } from "react-native";
 import { QAStepLayout } from "./QAStepLayout";
 import { onboardingCopy } from "../copy";
 import { useOnboardingStore } from "../onboardingStore";
-import { useThemeColors } from "../../../theme";
+import { useTheme } from "../../../theme";
 
 export function NameStep() {
-    const colors = useThemeColors();
+    const { theme } = useTheme();
     const name = useOnboardingStore((s) => s.answers.name);
     const setAnswer = useOnboardingStore((s) => s.setAnswer);
 
@@ -15,13 +15,13 @@ export function NameStep() {
                 value={name}
                 onChangeText={(v) => setAnswer("name", v)}
                 placeholder={onboardingCopy.namePlaceholder}
-                placeholderTextColor={colors.textMuted}
+                placeholderTextColor={theme.textMuted}
                 style={[
                     styles.input,
                     {
-                        backgroundColor: colors.inputBg,
-                        borderColor: colors.border,
-                        color: colors.textPrimary,
+                        backgroundColor: theme.inputBg,
+                        borderColor: theme.borderMedium,
+                        color: theme.textPrimary,
                     },
                 ]}
                 autoCapitalize="words"

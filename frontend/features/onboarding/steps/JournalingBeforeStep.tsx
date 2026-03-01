@@ -2,7 +2,7 @@ import { View, Text, Pressable, StyleSheet } from "react-native";
 import { QAStepLayout } from "./QAStepLayout";
 import { onboardingCopy } from "../copy";
 import { useOnboardingStore } from "../onboardingStore";
-import { useThemeColors } from "../../../theme";
+import { useTheme } from "../../../theme";
 
 const OPTIONS = [
     { key: "never", label: onboardingCopy.journalingNever },
@@ -12,13 +12,26 @@ const OPTIONS = [
     { key: "daily", label: onboardingCopy.journalingDaily },
 ] as const;
 
+const ENCOURAGEMENT: Record<(typeof OPTIONS)[number]["key"], string> = {
+    never: onboardingCopy.journalingEncouragementNever,
+    fewTimes: onboardingCopy.journalingEncouragementFewTimes,
+    sometimes: onboardingCopy.journalingEncouragementSometimes,
+    regularly: onboardingCopy.journalingEncouragementRegularly,
+    daily: onboardingCopy.journalingEncouragementDaily,
+};
+
 export function JournalingBeforeStep() {
-    const colors = useThemeColors();
+    const { theme } = useTheme();
     const value = useOnboardingStore((s) => s.answers.journalingBefore);
     const setAnswer = useOnboardingStore((s) => s.setAnswer);
 
+    const subtitle = value ? ENCOURAGEMENT[value] : undefined;
+
     return (
-        <QAStepLayout question={onboardingCopy.journalingBeforeQuestion}>
+        <QAStepLayout
+            question={onboardingCopy.journalingBeforeQuestion}
+            subtitle={subtitle}
+        >
             <View style={styles.options}>
                 {OPTIONS.map(({ key, label }) => {
                     const selected = value === key;
@@ -29,15 +42,15 @@ export function JournalingBeforeStep() {
                             style={[
                                 styles.option,
                                 {
-                                    backgroundColor: selected ? colors.surface : colors.inputBg,
-                                    borderColor: selected ? colors.accentPrimary : colors.border,
+                                    backgroundColor: selected ? theme.bgSurface : theme.inputBg,
+                                    borderColor: selected ? theme.accent : theme.borderMedium,
                                 },
                             ]}
                         >
                             <Text
                                 style={[
                                     styles.optionText,
-                                    { color: selected ? colors.accentPrimary : colors.textPrimary },
+                                    { color: selected ? theme.accent : theme.textPrimary },
                                 ]}
                             >
                                 {label}

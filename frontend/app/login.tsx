@@ -1,14 +1,18 @@
 import { useState } from "react";
-import { View, Text, TextInput, Pressable, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
+import { View, Text, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useAppStore } from "../store/useAppStore";
+import { useTheme } from "../theme";
+import { PrimaryButton } from "../components/buttons/PrimaryButton";
+import { GhostButton } from "../components/buttons/GhostButton";
+import { ScreenBackground } from "../components/ScreenBackground";
 
 /**
  * Login / Register screen.
- * Shown when the user is not authenticated.
  */
 export default function LoginScreen() {
+    const { theme } = useTheme();
     const [isRegister, setIsRegister] = useState(false);
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
@@ -41,157 +45,122 @@ export default function LoginScreen() {
     };
 
     return (
-        <SafeAreaView style={{ flex: 1, backgroundColor: "#F5F2EB" }}>
-            <KeyboardAvoidingView
-                style={{ flex: 1 }}
-                behavior={Platform.OS === "ios" ? "padding" : "height"}
-            >
-                <View
-                    style={{
-                        flex: 1,
-                        justifyContent: "center",
-                        paddingHorizontal: 32,
-                    }}
+        <ScreenBackground>
+            <SafeAreaView style={{ flex: 1 }}>
+                <KeyboardAvoidingView
+                    style={{ flex: 1 }}
+                    behavior={Platform.OS === "ios" ? "padding" : "height"}
                 >
-                    {/* Header */}
-                    <Text style={{ fontSize: 40, textAlign: "center", marginBottom: 8 }}>
-                        🎙️
-                    </Text>
-                    <Text
+                    <View
                         style={{
-                            fontFamily: "Georgia",
-                            fontSize: 28,
-                            fontWeight: "700",
-                            color: "#2D2926",
-                            textAlign: "center",
-                            marginBottom: 4,
+                            flex: 1,
+                            justifyContent: "center",
+                            paddingHorizontal: 32,
                         }}
                     >
-                        DayCall
-                    </Text>
-                    <Text
-                        style={{
-                            fontSize: 15,
-                            color: "#A69B8D",
-                            textAlign: "center",
-                            marginBottom: 40,
-                        }}
-                    >
-                        Your AI Voice Journal
-                    </Text>
-
-                    {/* Error */}
-                    {error ? (
-                        <View
-                            style={{
-                                backgroundColor: "#FEF2F2",
-                                borderRadius: 8,
-                                padding: 12,
-                                marginBottom: 16,
-                                borderWidth: 1,
-                                borderColor: "#FECACA",
-                            }}
-                        >
-                            <Text style={{ color: "#DC2626", fontSize: 14, textAlign: "center" }}>
-                                {error}
-                            </Text>
-                        </View>
-                    ) : null}
-
-                    {/* Email */}
-                    <TextInput
-                        placeholder="Email"
-                        value={email}
-                        onChangeText={setEmail}
-                        autoCapitalize="none"
-                        keyboardType="email-address"
-                        placeholderTextColor="#A69B8D"
-                        style={{
-                            backgroundColor: "#FFFFFF",
-                            borderWidth: 1,
-                            borderColor: "#E5DFD5",
-                            borderRadius: 12,
-                            padding: 16,
-                            fontSize: 16,
-                            color: "#2D2926",
-                            marginBottom: 12,
-                        }}
-                    />
-
-                    {/* Password */}
-                    <TextInput
-                        placeholder="Password"
-                        value={password}
-                        onChangeText={setPassword}
-                        secureTextEntry
-                        placeholderTextColor="#A69B8D"
-                        style={{
-                            backgroundColor: "#FFFFFF",
-                            borderWidth: 1,
-                            borderColor: "#E5DFD5",
-                            borderRadius: 12,
-                            padding: 16,
-                            fontSize: 16,
-                            color: "#2D2926",
-                            marginBottom: 24,
-                        }}
-                    />
-
-                    {/* Submit Button */}
-                    <Pressable
-                        onPress={handleSubmit}
-                        disabled={loading}
-                        style={({ pressed }) => ({
-                            backgroundColor: loading
-                                ? "#E8956F"
-                                : pressed
-                                    ? "#C4603D"
-                                    : "#DA7756",
-                            borderRadius: 12,
-                            padding: 16,
-                            alignItems: "center",
-                            marginBottom: 16,
-                            shadowColor: "#DA7756",
-                            shadowOffset: { width: 0, height: 2 },
-                            shadowOpacity: 0.2,
-                            shadowRadius: 4,
-                            elevation: 3,
-                        })}
-                    >
-                        {loading ? (
-                            <ActivityIndicator color="#FFFFFF" />
-                        ) : (
-                            <Text
-                                style={{
-                                    color: "#FFFFFF",
-                                    fontSize: 16,
-                                    fontWeight: "600",
-                                }}
-                            >
-                                {isRegister ? "Create Account" : "Sign In"}
-                            </Text>
-                        )}
-                    </Pressable>
-
-                    {/* Toggle */}
-                    <Pressable onPress={() => { setIsRegister(!isRegister); setError(""); }}>
                         <Text
                             style={{
-                                color: "#A69B8D",
-                                fontSize: 14,
+                                fontSize: 28,
+                                fontWeight: "700",
+                                color: theme.textPrimary,
                                 textAlign: "center",
+                                marginBottom: 4,
                             }}
                         >
-                            {isRegister
-                                ? "Already have an account? "
-                                : "Don't have an account? "}
-                            <Text style={{ color: "#DA7756", fontWeight: "600" }}>
-                                {isRegister ? "Sign In" : "Create Account"}
-                            </Text>
+                            DayCall
                         </Text>
-                    </Pressable>
-                </View>
-            </KeyboardAvoidingView>
-        </SafeAreaView>
+                        <Text
+                            style={{
+                                fontSize: 15,
+                                color: theme.textSecondary,
+                                textAlign: "center",
+                                marginBottom: 40,
+                            }}
+                        >
+                            Your AI Voice Journal
+                        </Text>
+
+                        {error ? (
+                            <View
+                                style={{
+                                    backgroundColor: theme.errorBg,
+                                    borderRadius: 8,
+                                    padding: 12,
+                                    marginBottom: 16,
+                                    borderWidth: 1,
+                                    borderColor: theme.errorBorder,
+                                }}
+                            >
+                                <Text style={{ color: theme.error, fontSize: 14, textAlign: "center" }}>
+                                    {error}
+                                </Text>
+                            </View>
+                        ) : null}
+
+                        <TextInput
+                            placeholder="Email"
+                            value={email}
+                            onChangeText={setEmail}
+                            autoCapitalize="none"
+                            keyboardType="email-address"
+                            placeholderTextColor={theme.textMuted}
+                            style={{
+                                backgroundColor: theme.inputBg,
+                                borderWidth: 1,
+                                borderColor: theme.borderMedium,
+                                borderRadius: 12,
+                                padding: 16,
+                                fontSize: 16,
+                                color: theme.textPrimary,
+                                marginBottom: 12,
+                            }}
+                        />
+
+                        <TextInput
+                            placeholder="Password"
+                            value={password}
+                            onChangeText={setPassword}
+                            secureTextEntry
+                            placeholderTextColor={theme.textMuted}
+                            style={{
+                                backgroundColor: theme.inputBg,
+                                borderWidth: 1,
+                                borderColor: theme.borderMedium,
+                                borderRadius: 12,
+                                padding: 16,
+                                fontSize: 16,
+                                color: theme.textPrimary,
+                                marginBottom: 24,
+                            }}
+                        />
+
+                        {loading ? (
+                            <View style={{ padding: 16, alignItems: "center" }}>
+                                <ActivityIndicator color={theme.accent} />
+                            </View>
+                        ) : (
+                            <PrimaryButton
+                                label={isRegister ? "Create Account" : "Sign In"}
+                                onPress={handleSubmit}
+                            />
+                        )}
+
+                        <View style={{ marginTop: 16 }}>
+                            <GhostButton
+                                label={
+                                    isRegister
+                                        ? "Already have an account? Sign In"
+                                        : "Don't have an account? Create Account"
+                                }
+                                onPress={() => {
+                                    setIsRegister(!isRegister);
+                                    setError("");
+                                }}
+                            />
+                        </View>
+                    </View>
+                </KeyboardAvoidingView>
+            </SafeAreaView>
+        </ScreenBackground>
     );
 }

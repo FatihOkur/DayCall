@@ -1,21 +1,11 @@
 /**
- * Theme module — semantic color tokens and theme-aware hook.
- * Import colors from here; do not hardcode hex values in components.
+ * Theme barrel -- re-exports tokens, context, and springs.
  */
 
-import {
-    themeColorsLight,
-    themeColorsDark,
-    type ThemeColors,
-} from "./colors";
+export { darkTheme, lightTheme } from "./colors";
+export type { Theme } from "./colors";
 
-export { themeColorsLight, themeColorsDark };
-export type { ThemeColors };
+export { ThemeProvider, useTheme } from "./ThemeContext";
+export type { ThemeMode } from "./ThemeContext";
 
-/**
- * Returns the current theme colors.
- * TODO: Currently forced to dark mode. Swap to useColorScheme() when user toggle is added.
- */
-export function useThemeColors(): ThemeColors {
-    return themeColorsDark;
-}
+export { springs } from "./springs";

@@ -5,14 +5,14 @@
 import { useEffect, useRef } from "react";
 import { View, Text, StyleSheet, Animated } from "react-native";
 import { Mascot } from "../Mascot";
-import { useThemeColors } from "../../../theme";
+import { useTheme } from "../../../theme";
 
 interface NarrativeStepLayoutProps {
     message: string;
 }
 
 export function NarrativeStepLayout({ message }: NarrativeStepLayoutProps) {
-    const colors = useThemeColors();
+    const { theme } = useTheme();
     const opacity = useRef(new Animated.Value(0)).current;
 
     useEffect(() => {
@@ -30,13 +30,13 @@ export function NarrativeStepLayout({ message }: NarrativeStepLayoutProps) {
                 style={[
                     styles.bubble,
                     {
-                        backgroundColor: colors.speechBubbleBg,
-                        borderColor: colors.border,
+                        backgroundColor: theme.speechBubbleBg,
+                        borderColor: theme.borderMedium,
                     },
                     { opacity },
                 ]}
             >
-                <Text style={[styles.bubbleText, { color: colors.textPrimary }]}>
+                <Text style={[styles.bubbleText, { color: theme.textPrimary }]}>
                     {message}
                 </Text>
             </Animated.View>

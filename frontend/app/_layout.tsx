@@ -11,15 +11,10 @@ import {
 } from "@expo-google-fonts/nunito";
 import { useAppStore } from "../store/useAppStore";
 import { useOnboardingStore } from "../features/onboarding/onboardingStore";
-import { useThemeColors } from "../theme";
+import { ThemeProvider, useTheme } from "../theme";
 
-/**
- * Root layout — wraps the entire app.
- * Onboarding gating: redirect to /onboarding if not yet completed.
- * Auth gating: redirect to /login if not authenticated, or to /(tabs) if logged in.
- */
-export default function RootLayout() {
-    const colors = useThemeColors();
+function RootLayoutInner() {
+    const { theme, isDark } = useTheme();
     const [fontsLoaded] = useFonts({
         Nunito_700Bold,
         Nunito_800ExtraBold,
@@ -33,7 +28,6 @@ export default function RootLayout() {
     const router = useRouter();
     const segments = useSegments();
 
-    // Restore session and hydrate onboarding flag on app launch
     useEffect(() => {
         restoreSession();
     }, []);
@@ -42,7 +36,6 @@ export default function RootLayout() {
         hydrateOnboardingDone();
     }, []);
 
-    // Onboarding and auth gating — redirect based on state
     useEffect(() => {
         if (!isOnboardingHydrated || isLoading) return;
 
@@ -63,34 +56,42 @@ export default function RootLayout() {
         }
     }, [user, isLoading, hasCompletedOnboarding, isOnboardingHydrated, segments]);
 
-    // Show loading until fonts, auth, and onboarding state are hydrated
     if (!fontsLoaded || !isOnboardingHydrated || isLoading) {
         return (
             <View
-                style={[
-                    {
-                        flex: 1,
-                        justifyContent: "center",
-                        alignItems: "center",
-                    },
-                    { backgroundColor: colors.bg },
-                ]}
+                style={{
+                    flex: 1,
+                    justifyContent: "center",
+                    alignItems: "center",
+                    backgroundColor: theme.bgBase,
+                }}
             >
-                <StatusBar style="light" />
-                <ActivityIndicator size="large" color={colors.accentPrimary} />
+                <StatusBar style={isDark ? "light" : "dark"} />
+                <ActivityIndicator size="large" color={theme.accent} />
             </View>
         );
     }
 
     return (
         <>
-            <StatusBar style="light" />
+            <StatusBar style={isDark ? "light" : "dark"} />
             <Stack
                 screenOptions={{
                     headerShown: false,
-                    contentStyle: { backgroundColor: colors.bg },
+                    contentStyle: { backgroundColor: theme.bgBase },
                 }}
             />
         </>
+    );
+}
+
+/**
+ * Root layout -- wraps entire app in ThemeProvider.
+ */
+export default function RootLayout() {
+    return (
+        <ThemeProvider>
+            <RootLayoutInner />
+        </ThemeProvider>
     );
 }

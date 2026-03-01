@@ -2,7 +2,7 @@ import { View, Text, Pressable, StyleSheet } from "react-native";
 import { QAStepLayout } from "./QAStepLayout";
 import { onboardingCopy } from "../copy";
 import { useOnboardingStore } from "../onboardingStore";
-import { useThemeColors } from "../../../theme";
+import { useTheme } from "../../../theme";
 
 const OPTIONS = [
     { key: "male", label: onboardingCopy.genderMale },
@@ -13,7 +13,7 @@ const OPTIONS = [
 ] as const;
 
 export function GenderStep() {
-    const colors = useThemeColors();
+    const { theme } = useTheme();
     const gender = useOnboardingStore((s) => s.answers.gender);
     const setAnswer = useOnboardingStore((s) => s.setAnswer);
 
@@ -29,15 +29,15 @@ export function GenderStep() {
                             style={[
                                 styles.option,
                                 {
-                                    backgroundColor: selected ? colors.surface : colors.inputBg,
-                                    borderColor: selected ? colors.accentPrimary : colors.border,
+                                    backgroundColor: selected ? theme.bgSurface : theme.inputBg,
+                                    borderColor: selected ? theme.accent : theme.borderMedium,
                                 },
                             ]}
                         >
                             <Text
                                 style={[
                                     styles.optionText,
-                                    { color: selected ? colors.accentPrimary : colors.textPrimary },
+                                    { color: selected ? theme.accent : theme.textPrimary },
                                 ]}
                             >
                                 {label}

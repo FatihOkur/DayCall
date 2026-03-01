@@ -2,7 +2,7 @@ import { View, Text, Pressable, StyleSheet, ScrollView } from "react-native";
 import { QAStepLayout } from "./QAStepLayout";
 import { onboardingCopy } from "../copy";
 import { useOnboardingStore } from "../onboardingStore";
-import { useThemeColors } from "../../../theme";
+import { useTheme } from "../../../theme";
 
 const TRAIT_KEYS = [
     "traitCalm",
@@ -31,7 +31,7 @@ const TRAIT_LABELS: Record<(typeof TRAIT_KEYS)[number], string> = {
 };
 
 export function EmotionalTraitsStep() {
-    const colors = useThemeColors();
+    const { theme } = useTheme();
     const emotionalTraits = useOnboardingStore((s) => s.answers.emotionalTraits);
     const setAnswer = useOnboardingStore((s) => s.setAnswer);
 
@@ -56,8 +56,8 @@ export function EmotionalTraitsStep() {
                                 style={[
                                     styles.option,
                                     {
-                                        backgroundColor: selected ? colors.surface : colors.inputBg,
-                                        borderColor: selected ? colors.accentPrimary : colors.border,
+                                        backgroundColor: selected ? theme.bgSurface : theme.inputBg,
+                                        borderColor: selected ? theme.accent : theme.borderMedium,
                                     },
                                 ]}
                             >
@@ -66,8 +66,8 @@ export function EmotionalTraitsStep() {
                                         styles.optionText,
                                         {
                                             color: selected
-                                                ? colors.accentPrimary
-                                                : colors.textPrimary,
+                                                ? theme.accent
+                                                : theme.textPrimary,
                                         },
                                     ]}
                                 >

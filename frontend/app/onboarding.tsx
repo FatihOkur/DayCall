@@ -1,10 +1,19 @@
 /**
- * Onboarding — single route, step index + registry.
+ * Onboarding -- single route, step index + registry.
  * On completion: set onboarding done, then replace to login or tabs.
  */
 
-import { useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { useState, useEffect } from "react";
+import {
+    View,
+    Text,
+    Pressable,
+    StyleSheet,
+    Keyboard,
+    TouchableWithoutFeedback,
+    useWindowDimensions,
+    Platform,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import {
@@ -15,7 +24,9 @@ import {
 import { STEP_REGISTRY } from "../features/onboarding/steps/registry";
 import { useOnboardingStore } from "../features/onboarding/onboardingStore";
 import { useAppStore } from "../store/useAppStore";
-import { useThemeColors } from "../theme";
+import { useTheme } from "../theme";
+import { PrimaryButton } from "../components/buttons/PrimaryButton";
+import { ScreenBackground } from "../components/ScreenBackground";
 
 function canAdvanceStep(stepId: OnboardingStepId, answers: ReturnType<typeof useOnboardingStore.getState>["answers"]): boolean {
     switch (stepId) {
@@ -44,19 +55,49 @@ function canAdvanceStep(stepId: OnboardingStepId, answers: ReturnType<typeof use
 }
 
 export default function OnboardingScreen() {
-    const colors = useThemeColors();
+    const { theme } = useTheme();
+    const { height: windowHeight } = useWindowDimensions();
     const router = useRouter();
     const [stepIndex, setStepIndex] = useState(0);
-    const [buttonPressed, setButtonPressed] = useState(false);
+    const [keyboardVisible, setKeyboardVisible] = useState(false);
     const answers = useOnboardingStore((s) => s.answers);
     const setOnboardingComplete = useOnboardingStore((s) => s.setOnboardingComplete);
     const user = useAppStore((s) => s.user);
 
     const stepId = ONBOARDING_STEP_IDS[stepIndex];
+    const isNameStep = stepId === "name";
     const isLastStep = stepIndex === ONBOARDING_STEP_IDS.length - 1;
     const canAdvance = canAdvanceStep(stepId, answers);
     const StepComponent = STEP_REGISTRY[stepId];
     const nextLabel = STEP_NEXT_LABEL[stepId];
+
+    useEffect(() => {
+        const showSub = Keyboard.addListener(
+            Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+            () => setKeyboardVisible(true)
+        );
+        const hideSub = Keyboard.addListener(
+            Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
+            () => setKeyboardVisible(false)
+        );
+        return () => {
+            showSub.remove();
+            hideSub.remove();
+        };
+    }, []);
+
+    const liftFooterForKeyboard = isNameStep && keyboardVisible;
+    const footerStyle = liftFooterForKeyboard
+        ? [
+            styles.footer,
+            {
+                position: "absolute" as const,
+                top: windowHeight * 0.55,
+                left: 16,
+                right: 16,
+            },
+        ]
+        : styles.footer;
 
     const handleBack = () => {
         if (stepIndex > 0) setStepIndex((i) => i - 1);
@@ -72,81 +113,57 @@ export default function OnboardingScreen() {
         setStepIndex((i) => i + 1);
     };
 
-    const buttonBgColor = canAdvance
-        ? (buttonPressed ? colors.accentHover : colors.accentPrimary)
-        : colors.border;
-    const buttonBorderWidth = canAdvance && !buttonPressed ? 4 : 2;
-
     return (
-        <SafeAreaView style={[styles.safe, { backgroundColor: colors.bg }]}>
-            {/* Header: back arrow + progress bar */}
-            <View style={styles.header}>
-                {stepIndex > 0 ? (
-                    <Pressable
-                        onPress={handleBack}
-                        hitSlop={12}
-                        style={styles.backButton}
-                    >
-                        <Text style={[styles.backArrow, { color: colors.textPrimary }]}>
-                            {"\u2190"}
-                        </Text>
-                    </Pressable>
-                ) : (
-                    <View style={styles.backPlaceholder} />
-                )}
+        <ScreenBackground>
+            <SafeAreaView style={styles.safe}>
+                {/* Header: back arrow + progress bar */}
+                <View style={styles.header}>
+                    {stepIndex > 0 ? (
+                        <Pressable
+                            onPress={handleBack}
+                            hitSlop={12}
+                            style={styles.backButton}
+                        >
+                            <Text style={[styles.backArrow, { color: theme.textPrimary }]}>
+                                {"\u2190"}
+                            </Text>
+                        </Pressable>
+                    ) : (
+                        <View style={styles.backPlaceholder} />
+                    )}
 
-                <View style={[styles.progressWrap, { backgroundColor: colors.borderSubtle }]}>
-                    <View
-                        style={[
-                            styles.progressBar,
-                            {
-                                width: `${((stepIndex + 1) / ONBOARDING_STEP_IDS.length) * 100}%`,
-                                backgroundColor: colors.accentPrimary,
-                            },
-                        ]}
-                    />
+                    <View style={[styles.progressWrap, { backgroundColor: theme.borderSubtle }]}>
+                        <View
+                            style={[
+                                styles.progressBar,
+                                {
+                                    width: `${((stepIndex + 1) / ONBOARDING_STEP_IDS.length) * 100}%`,
+                                    backgroundColor: theme.accent,
+                                },
+                            ]}
+                        />
+                    </View>
+
+                    <View style={styles.backPlaceholder} />
                 </View>
 
-                <View style={styles.backPlaceholder} />
-            </View>
-
-            {/* Step content */}
-            <View style={styles.content}>
-                {StepComponent && <StepComponent />}
-            </View>
-
-            {/* Bottom button */}
-            <View style={styles.footer}>
-                <Pressable
-                    onPress={handleNext}
-                    onPressIn={() => setButtonPressed(true)}
-                    onPressOut={() => setButtonPressed(false)}
-                    disabled={!canAdvance}
-                    style={styles.buttonOuter}
-                >
-                    <View
-                        style={[
-                            styles.button,
-                            {
-                                backgroundColor: buttonBgColor,
-                                borderBottomColor: canAdvance ? colors.buttonPrimaryBorder : "transparent",
-                                borderBottomWidth: canAdvance ? buttonBorderWidth : 0,
-                                marginTop: buttonPressed && canAdvance ? 2 : 0,
-                            },
-                        ]}
-                    >
-                        <Text
-                            style={[
-                                styles.buttonText,
-                                { color: canAdvance ? colors.buttonPrimaryText : colors.textMuted },
-                            ]}
-                        >
-                            {nextLabel}
-                        </Text>
+                {/* Step content — tap blank area to dismiss keyboard */}
+                <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+                    <View style={styles.content}>
+                        {StepComponent && <StepComponent />}
                     </View>
-                </Pressable>
-            </View>
-        </SafeAreaView>
+                </TouchableWithoutFeedback>
+
+                {/* Bottom button — lifts to 60% when keyboard open on name step */}
+                <View style={footerStyle}>
+                    <PrimaryButton
+                        label={nextLabel}
+                        onPress={handleNext}
+                        disabled={!canAdvance}
+                    />
+                </View>
+            </SafeAreaView>
+        </ScreenBackground>
     );
 }
 
@@ -189,22 +206,6 @@ const styles = StyleSheet.create({
     footer: {
         paddingHorizontal: 16,
         paddingTop: 12,
-    },
-    buttonOuter: {
-        width: "100%",
-    },
-    button: {
-        borderRadius: 16,
-        paddingVertical: 16,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    buttonText: {
-        fontFamily: "Nunito_700Bold",
-        fontSize: 15,
-        fontWeight: "700",
-        textTransform: "uppercase",
-        letterSpacing: 1.5,
-        textAlign: "center",
+        paddingBottom: 8,
     },
 });

@@ -1,15 +1,15 @@
 import { View, Text, StyleSheet } from "react-native";
 import { Mascot } from "../Mascot";
 import { onboardingCopy } from "../copy";
-import { useThemeColors } from "../../../theme";
+import { useTheme } from "../../../theme";
 
 export function CommittedStep() {
-    const colors = useThemeColors();
+    const { theme } = useTheme();
 
     return (
         <View style={styles.container}>
             <Mascot variant="hero" />
-            <Text style={[styles.title, { color: colors.textPrimary }]}>
+            <Text style={[styles.title, { color: theme.textPrimary }]}>
                 {onboardingCopy.committedTitle}
             </Text>
         </View>
